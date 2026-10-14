@@ -679,6 +679,16 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   (`INTERLEAVE` in `crates/export/src/job.rs`), each followed by its audio, and H.264 uses one slice
   per four macroblock rows instead of one per core. MXF files are the exception: their UMIDs and
   modification date come from the clock, as SMPTE ST 330 / ST 377 expect.
+- **GPU rendering.** With `gpuRendering: auto` the frames are composited by the registered frame
+  renderer (the apps register `filmcraft-gpu`'s off-screen `ExportRenderer`, a pool of up to four
+  per export) and the CPU reference renderer takes whatever it declines. The CLI asks for the wgpu
+  backends itself (`filmcraft-gpu`'s `backends` feature; the desktop app gets them through eframe),
+  so a CLI built on its own composites on the GPU too. A registered frame preparer decodes a
+  frame's layers and converts them for upload *before* the worker takes a renderer from the pool:
+  export workers are rayon threads, and one that held a renderer while decoding could run another
+  frame's job that then waited for a renderer for ever (#799). A thread that holds a renderer never
+  waits for another, and no wait lasts more than ten seconds; such frames go to the CPU and are
+  counted. Every export reports `gpu {requested, adapter, reason, frames, cpuFrames}` ([agents.md](agents.md)).
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,

@@ -165,5 +165,8 @@ captions at its timeline playhead. Audio-only Source clips have no picture to ex
 The shared `file.exportFrame` command accepts `target: "source" | "program"` (Program by default),
 `format: "png" | "jpeg" | "tiff" | "bmp"`, `depth: 8 | 16` (default 8),
 optional `item` for Source or `sequence` for Program, and an exact integer `time` in ticks.
+`gpuRendering: "off" | "auto"` (default off, as for exports) composites a Program frame on the GPU
+export renderer when there is one, and the result's `gpu` says how the frame was composited
+(`requested`, `adapter`, `reason`, as for `file.exportMedia`).
 Supplying `path` executes directly; invoking it through the UI without a path opens settings,
 routed to the focused monitor unless an explicit monitor/target is provided.

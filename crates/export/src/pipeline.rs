@@ -12,7 +12,10 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{
+    ExportError, ExportSettings, FrameRenderer, GpuExportStatus, GpuRendering, Result, build_frame_renderer, frame_renderer_factory_count, gpu_adapter_probe,
+    note_gpu_fallback, note_gpu_frame, set_last_gpu_export_status,
+};
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,40 +54,74 @@ impl Geometry {
 
 /// GPU renderers shared by the export workers: a worker takes a free one for a frame and puts it
 /// back (a single renderer behind a mutex made the workers queue, GPU export ~20 % slower than CPU).
+///
+/// Export workers are rayon threads, and a rayon thread waiting for its own jobs runs other
+/// jobs, other frames among them. A frame that waited for a renderer on a thread which already
+/// held one, or which was working for a thread that held one, could never get it: with every
+/// renderer held that way the export hung (#799). So a renderer is held only for GPU work (the
+/// [`crate::FramePreparer`] decodes first), a thread never waits for a second renderer, and a wait
+/// is bounded: past [`RendererPool::MAX_WAIT`] the frame is rendered on the CPU.
 struct RendererPool {
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
     failed: std::sync::atomic::AtomicBool,
+    /// Frames that got no renderer (rendered on the CPU): nested on a thread holding one, or
+    /// waited longer than `max_wait`.
+    busy: std::sync::atomic::AtomicU64,
+    /// [`RendererPool::MAX_WAIT`] (shorter in tests).
+    max_wait: std::time::Duration,
+}
+
+thread_local! {
+    /// This thread holds a pooled renderer (a frame job it runs meanwhile must not wait for one).
+    static HOLDS_RENDERER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl RendererPool {
+    /// The longest a frame waits for a free renderer before it is rendered on the CPU. Far above
+    /// a frame's GPU time: it only ends a wait that could otherwise last for ever.
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
         (!renderers.is_empty()).then(|| Self {
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
+            busy: std::sync::atomic::AtomicU64::new(0),
+            max_wait: Self::MAX_WAIT,
         })
     }
 
-    /// Run `f` with a free renderer, waiting for one if all are busy. `None` once a renderer has
-    /// panicked: the panicking renderer is dropped (its state can't be trusted) and so are the
-    /// others as they come back, so the caller falls back to the CPU for the rest of the export.
+    /// Run `f` with a free renderer, waiting for one if all are busy (see the type's
+    /// documentation for when it does not wait). `None` without a renderer, and once a renderer
+    /// has panicked: the panicking renderer is dropped (its state can't be trusted) and so are
+    /// the others as they come back, so the caller falls back to the CPU for the rest of the export.
     fn with<R>(&self, f: impl FnOnce(&mut dyn FrameRenderer) -> R) -> Option<R> {
         use std::sync::atomic::Ordering;
+        let nested = HOLDS_RENDERER.with(std::cell::Cell::get);
+        let deadline = web_time::Instant::now() + self.max_wait;
         let mut free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut r = loop {
             if self.failed.load(Ordering::SeqCst) {
                 return None;
             }
-            match free.pop() {
-                Some(r) => break r,
-                None => free = self.available.wait(free).unwrap_or_else(std::sync::PoisonError::into_inner),
+            if let Some(r) = free.pop() {
+                break r;
             }
+            let left = deadline.saturating_duration_since(web_time::Instant::now());
+            if nested || left.is_zero() {
+                // counted, and reported in the export's GPU status
+                self.busy.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            free = self.available.wait_timeout(free, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
         };
         drop(free);
+        HOLDS_RENDERER.with(|h| h.set(true));
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut *r)));
+        HOLDS_RENDERER.with(|h| h.set(false));
         let mut free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if res.is_err() {
             // (the panic hook has logged the panic itself)
@@ -130,6 +167,11 @@ pub(crate) struct Pipeline {
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
     /// batch (`ExportSettings::part_of_batch`).
     trim_pool: bool,
+    /// Requested setting and adapter (or why there is none) of this export, for its report.
+    gpu: GpuExportStatus,
+    /// Frames composited on the GPU and on the CPU by this pipeline.
+    gpu_frames: std::sync::atomic::AtomicU64,
+    cpu_frames: std::sync::atomic::AtomicU64,
 }
 
 impl Drop for Pipeline {
@@ -187,6 +229,12 @@ impl Pipeline {
             }
             RendererPool::new(list)
         };
+        let gpu = GpuExportStatus::start(
+            settings.gpu_rendering,
+            renderer.as_ref().map_or(0, |p| p.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()),
+            frame_renderer_factory_count(),
+            gpu_adapter_probe(),
+        );
         Ok(Pipeline {
             renderer,
             seq_rate: q.settings.frame_rate,
@@ -205,7 +253,20 @@ impl Pipeline {
             out_tf,
             effects,
             overlay,
+            gpu,
+            gpu_frames: std::sync::atomic::AtomicU64::new(0),
+            cpu_frames: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// This export's GPU status with its frame counts (also kept for `perf.stats`).
+    pub fn gpu_status(&self) -> GpuExportStatus {
+        use std::sync::atomic::Ordering;
+        let failed = self.renderer.as_ref().is_some_and(|p| p.failed.load(Ordering::SeqCst));
+        let busy = self.renderer.as_ref().map_or(0, |p| p.busy.load(Ordering::Relaxed));
+        let s = self.gpu.clone().finish(self.gpu_frames.load(Ordering::Relaxed), self.cpu_frames.load(Ordering::Relaxed), busy, failed);
+        set_last_gpu_export_status(&s);
+        s
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
@@ -220,24 +281,38 @@ impl Pipeline {
         let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
         let gpu = match pool {
             Some(pool) => {
-                let asked = web_time::Instant::now();
-                pool.with(|r| {
-                    crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
+                // The CPU part first (decoding the layers, converting them for upload), without a
+                // renderer: holding one through rayon work deadlocked (#799). `None` from the
+                // preparer sends the frame to the CPU renderer.
+                let prepared = match crate::frame_preparer() {
+                    Some(prepare) => prepare(&self.project, self.seq, t, self.opts, sources).map(Some),
+                    None => Some(None),
+                };
+                prepared.and_then(|prepared| {
+                    let asked = web_time::Instant::now();
+                    pool.with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        match prepared {
+                            Some(p) => r.render_prepared(p),
+                            None => r.render(&self.project, self.seq, t, self.opts, sources),
+                        }
+                    })
+                    .flatten()
                 })
-                .flatten()
             }
             None => None,
         };
         let img = match gpu {
             Some(img) => {
                 note_gpu_frame();
+                self.gpu_frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 img
             }
             None => {
                 if self.renderer.is_some() {
                     note_gpu_fallback();
                 }
+                self.cpu_frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
             }
         };
@@ -481,4 +556,98 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::RendererPool;
+    use crate::FrameRenderer;
+    use filmcraft_project::{ItemId, Project};
+    use filmcraft_render::{Image, RenderOptions, SourceProvider};
+    use filmcraft_time::Tick;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    struct Idle;
+    impl FrameRenderer for Idle {
+        fn render(&mut self, _: &Project, _: ItemId, _: Tick, _: RenderOptions, _: &dyn SourceProvider) -> Option<Image> {
+            None
+        }
+    }
+
+    fn pool(n: usize) -> Arc<RendererPool> {
+        Arc::new(RendererPool::new((0..n).map(|_| Box::new(Idle) as Box<dyn FrameRenderer>).collect()).unwrap())
+    }
+
+    /// Run `f` on a thread and fail (instead of hanging the suite) if it does not finish.
+    fn finishes<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(20)).expect("the renderer pool waited for ever (#799)")
+    }
+
+    /// #799: a frame job that runs on a thread already holding the pool's only renderer (rayon
+    /// runs other jobs while waiting for its own) waited for that renderer for ever.
+    #[test]
+    fn a_thread_holding_a_renderer_does_not_wait_for_another() {
+        let p = pool(1);
+        let started = std::time::Instant::now();
+        let inner = finishes(move || p.with(|_| p.with(|_| ()).is_some()).map(|inner| (inner, p.busy.load(Ordering::Relaxed))));
+        assert_eq!(inner, Some((false, 1)), "the nested frame goes to the CPU, counted as busy");
+        assert!(started.elapsed() < RendererPool::MAX_WAIT / 2, "it did not wait: {:?}", started.elapsed());
+    }
+
+    /// A wait is bounded: with the only renderer held elsewhere for longer than the cap, the
+    /// frame is rendered on the CPU instead of waiting on.
+    #[test]
+    fn a_wait_for_a_renderer_is_bounded() {
+        let mut p = Arc::try_unwrap(pool(1)).ok().unwrap();
+        p.max_wait = Duration::from_millis(50);
+        let p = Arc::new(p);
+        let (hold, release) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                p.with(|_| {
+                    let _ = held_tx.send(());
+                    let _ = release.recv();
+                })
+            })
+        };
+        held.recv().unwrap();
+        let waiter = p.clone();
+        assert_eq!(finishes(move || waiter.with(|_| ())), None, "no renderer within the cap");
+        assert_eq!(p.busy.load(Ordering::Relaxed), 1);
+        drop(hold);
+        assert!(holder.join().unwrap().is_some());
+        // the renderer came back: the next frame gets it
+        assert_eq!(p.with(|_| 7), Some(7));
+    }
+
+    /// The ordinary case still waits (every GPU-capable frame reaches a renderer): two threads,
+    /// one renderer, both frames rendered by it.
+    #[test]
+    fn a_free_thread_waits_for_the_renderer() {
+        let p = pool(1);
+        let used = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let (p, used) = (p.clone(), used.clone());
+                std::thread::spawn(move || {
+                    p.with(|_| {
+                        used.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(20));
+                    })
+                })
+            })
+            .collect();
+        for t in threads {
+            assert!(t.join().unwrap().is_some());
+        }
+        assert_eq!((used.load(Ordering::SeqCst), p.busy.load(Ordering::Relaxed)), (2, 0));
+    }
 }

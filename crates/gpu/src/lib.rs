@@ -44,7 +44,7 @@ pub mod fx;
 pub mod lut;
 pub mod mask;
 mod transition;
-pub use export_renderer::ExportRenderer;
+pub use export_renderer::{ExportRenderer, export_adapter};
 pub use lut::GpuLut;
 pub use mask::GpuMask;
 

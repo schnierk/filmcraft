@@ -520,6 +520,7 @@ impl Exporter {
             bytes,
             render_fps: nframes as f64 / secs.max(1e-6),
             extra_files,
+            gpu: Some(self.pipe.gpu_status()),
         }))
     }
 

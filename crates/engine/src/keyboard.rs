@@ -623,6 +623,14 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
         None => false,
         Some(v) => v.as_bool().ok_or_else(|| bad("file.exportFrame", "import must be true or false"))?,
     };
+    // Program frames composite on the GPU with `gpuRendering: "auto"` (as `file.exportMedia`); off
+    // by default, so a still is the CPU reference picture, byte for byte, unless asked otherwise.
+    let gpu_rendering = match p.get("gpuRendering") {
+        None => filmcraft_export::GpuRendering::Off,
+        Some(Value::Bool(true)) => filmcraft_export::GpuRendering::Auto,
+        Some(Value::Bool(false)) => filmcraft_export::GpuRendering::Off,
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| bad("file.exportFrame", "gpuRendering: off | auto"))?,
+    };
     let ext = format.extension();
     let path = match p.get("path") {
         Some(v) => {
@@ -642,11 +650,12 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
     // render then leaves that clip out, so saving it would pass a blank or partial picture off as
     // the requested frame (#228). Report it instead and write nothing; a later call succeeds.
     let _ = filmcraft_media::pending::take();
-    let img = if target.source {
-        filmcraft_render::render_item(&s.project, target.item, target.time, 1.0, &provider)
+    let (img, gpu) = if target.source {
+        (filmcraft_render::render_item(&s.project, target.item, target.time, 1.0, &provider), None)
     } else {
         let opts = filmcraft_render::RenderOptions { scale: 1.0, captions: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider))
+        let (img, gpu) = filmcraft_export::render_still(&s.project, target.item, target.time, opts, &provider, gpu_rendering);
+        (Some(img), Some(gpu))
     };
     if filmcraft_media::pending::take() {
         return Err(EngineError::Other("the frame is still loading; export it again in a moment".into()));
@@ -660,6 +669,9 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut out =
         json!({"path": path, "width": w, "height": h, "depth": depth, "target": if target.source { "source" } else { "program" }, "time": target.time.0});
+    if let Some(gpu) = gpu {
+        out["gpu"] = serde_json::to_value(gpu).map_err(|e| EngineError::Other(e.to_string()))?;
+    }
     if import {
         out["import"] = s.execute("file.import", json!({"paths": [path]}))?;
     }
@@ -806,7 +818,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "file.exportFrame",
             "Export Frame",
             None,
-            r#"{"path":str?,"format":"png|jpeg|tiff|bmp"?,"depth":8|16?,"import":bool?,"target":"source|program"?,"item":id?,"sequence":id?,"time":ticks?}"#,
+            r#"{"path":str?,"format":"png|jpeg|tiff|bmp"?,"depth":8|16?,"import":bool?,"target":"source|program"?,"item":id?,"sequence":id?,"time":ticks?,"gpuRendering":"off|auto"?}"#,
             always,
             export_frame,
         ),

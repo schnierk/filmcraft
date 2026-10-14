@@ -29,6 +29,11 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
         ) -> Option<filmcraft_render::Image> {
             self.0.render(project, seq, t, opts, sources)
         }
+
+        fn render_prepared(&mut self, prepared: filmcraft_export::PreparedFrame) -> Option<filmcraft_render::Image> {
+            let frame = prepared.downcast::<filmcraft_gpu::export_renderer::PreparedExportFrame>().ok()?;
+            self.0.render_prepared(*frame)
+        }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
 }
@@ -475,6 +480,9 @@ pub fn export(o: &Opts) -> Vec<Value> {
         // does it here so `--gpu-rendering auto` measures the GPU path (and the row reports the
         // frames it actually rendered on the GPU).
         filmcraft_engine::export::register_frame_renderer(gpu_export_frame_renderer_factory);
+        filmcraft_engine::export::register_frame_preparer(|project, seq, t, opts, sources| {
+            filmcraft_gpu::export_renderer::prepare_export_frame(project, seq, t, opts, sources).map(|f| Box::new(f) as filmcraft_export::PreparedFrame)
+        });
         for _ in 0..o.repeat {
             let mut s = Session::default();
             let a = playback::import(&mut s, &path);

@@ -457,7 +457,111 @@ fn gpu_hook_scenarios() {
         assert_eq!(frame("adj-off", f), frame("adj-auto", f), "frame {f}: an adjustment layer frame is the CPU's");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
+    let r = mk24(&tmp("adj-status.png"), crate::GpuRendering::Auto);
+    let gpu = r.gpu.expect("an export of a sequence reports its GPU status");
+    assert_eq!((gpu.frames, gpu.cpu_frames), (12, 12), "{gpu:?}");
+    assert!(gpu.reason.as_deref().is_some_and(|w| w.starts_with("12 of 24 frames need the CPU compositor")), "{gpu:?}");
+
+    // 6. #799: the export result says whether the GPU was asked for, which adapter drew the
+    //    frames, and why it did not.
+    let (p, seq, m) = project();
+    let mk2 = |name: &str, gpu: crate::GpuRendering| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: tmp(name), ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+        s.gpu_rendering = gpu;
+        export(&p, seq, &s, &m, &Progress::default()).unwrap().gpu.expect("GPU status in the report")
+    };
     crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+    let off = mk2("status-off.png", crate::GpuRendering::Off);
+    assert_eq!((off.requested, off.adapter.as_deref(), off.frames, off.cpu_frames), (crate::GpuRendering::Off, None, 0, 2), "{off:?}");
+    assert!(off.reason.as_deref().is_some_and(|w| w.contains("gpuRendering is off")), "{off:?}");
+    let json = serde_json::to_value(&off).unwrap();
+    assert_eq!(json["requested"], "off");
+    assert!(json["adapter"].is_null() && json["cpuFrames"] == 2, "{json}");
+    // nothing registered: "did not try", said as such
+    crate::reset_frame_renderers_for_tests();
+    let none = mk2("status-none.png", crate::GpuRendering::Auto);
+    assert_eq!((none.adapter.as_deref(), none.reason.as_deref(), none.cpu_frames), (None, Some("this program registers no GPU frame renderer"), 2));
+    // no adapter on this host: the probe's reason is the export's
+    crate::register_frame_renderer(|| None);
+    crate::register_gpu_adapter_probe(|| Err("no GPU adapter found (test)".into()));
+    let fell = mk2("status-fell.png", crate::GpuRendering::Auto);
+    assert_eq!((fell.requested, fell.adapter.as_deref(), fell.reason.as_deref()), (crate::GpuRendering::Auto, None, Some("no GPU adapter found (test)")));
+    assert_eq!(crate::last_gpu_export_status(), Some(fell.clone()), "perf.stats reads the last export's status");
+    // an adapter: named, every frame on it, no reason
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+    crate::register_gpu_adapter_probe(|| Ok("Test GPU (Fake)".into()));
+    let used = mk2("status-gpu.png", crate::GpuRendering::Auto);
+    assert_eq!((used.adapter.as_deref(), used.reason.as_deref(), used.frames, used.cpu_frames), (Some("Test GPU (Fake)"), None, 2, 0), "{used:?}");
+
+    // 7. A registered preparer does the CPU part before a renderer is taken (#799), and its
+    //    `None` sends the frame to the CPU renderer.
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(PreparedFake) as Box<dyn FrameRenderer>));
+    crate::register_frame_preparer(|_, _, t, _, _| Some(Box::new(t) as crate::PreparedFrame));
+    let prepared = mk2("prepared-gpu.png", crate::GpuRendering::Auto);
+    assert_eq!((prepared.frames, prepared.cpu_frames), (2, 0), "{prepared:?}");
+    assert_eq!(PREPARED.load(std::sync::atomic::Ordering::SeqCst), 2, "render_prepared got the preparer's frames");
+    assert_ne!(std::fs::read(tmp("prepared-gpu000.png")).unwrap(), std::fs::read(tmp("status-off000.png")).unwrap());
+    crate::register_frame_preparer(|_, _, _, _, _| None);
+    let declined = mk2("prepared-cpu.png", crate::GpuRendering::Auto);
+    assert_eq!((declined.frames, declined.cpu_frames), (0, 2), "{declined:?}");
+    assert_eq!(
+        std::fs::read(tmp("prepared-cpu000.png")).unwrap(),
+        std::fs::read(tmp("status-off000.png")).unwrap(),
+        "declined by the preparer = the CPU picture"
+    );
+    crate::reset_frame_renderers_for_tests();
+}
+
+static PREPARED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Renders only through [`FrameRenderer::render_prepared`], with what the test's preparer made.
+struct PreparedFake;
+
+impl FrameRenderer for PreparedFake {
+    fn render(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        panic!("a renderer with a preparer is given prepared frames");
+    }
+
+    fn render_prepared(&mut self, prepared: crate::PreparedFrame) -> Option<filmcraft_render::Image> {
+        prepared.downcast::<Tick>().ok()?;
+        PREPARED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(filmcraft_render::Image::new(320, 180))
+    }
+}
+
+#[test]
+fn gpu_status_reasons() {
+    use crate::{GpuExportStatus, GpuRendering};
+    let ok: crate::GpuAdapterProbe = || Ok("GPU".into());
+    let none: crate::GpuAdapterProbe = || Err("no GPU adapter found".into());
+    let off = GpuExportStatus::start(GpuRendering::Off, 0, 1, Some(ok));
+    assert_eq!((off.adapter.as_deref(), off.reason.is_some()), (None, true), "Off does not open the device");
+    assert_eq!(GpuExportStatus::start(GpuRendering::Auto, 0, 0, Some(ok)).reason.as_deref(), Some("this program registers no GPU frame renderer"));
+    assert_eq!(GpuExportStatus::start(GpuRendering::Auto, 0, 1, Some(none)).reason.as_deref(), Some("no GPU adapter found"));
+    assert!(GpuExportStatus::start(GpuRendering::Auto, 0, 1, Some(ok)).reason.is_some_and(|w| w.contains("could not be created on GPU")));
+    assert!(GpuExportStatus::start(GpuRendering::Auto, 0, 1, None).reason.is_some());
+    let gpu = GpuExportStatus::start(GpuRendering::Auto, 4, 1, Some(ok));
+    assert_eq!((gpu.adapter.as_deref(), gpu.reason.as_deref()), (Some("GPU"), None));
+    assert_eq!(gpu.clone().finish(10, 0, 0, false).reason, None);
+    let busy = gpu.clone().finish(8, 2, 2, false).reason.unwrap();
+    assert!(busy.starts_with("2 of 10 frames were composited on the CPU because no GPU renderer was free"), "{busy}");
+    let mixed = gpu.clone().finish(7, 3, 1, false).reason.unwrap();
+    assert!(mixed.contains("1 found no free GPU renderer, 2 need"), "{mixed}");
+    assert!(gpu.clone().finish(3, 7, 0, true).reason.unwrap().contains("failed during the export"));
+    // hostile counts: more busy frames than CPU frames, totals at the limit
+    let edge = gpu.finish(u64::MAX, 1, 5, false);
+    assert!(edge.reason.unwrap().starts_with("1 of 18446744073709551615 frames were composited on the CPU because"));
 }
 
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

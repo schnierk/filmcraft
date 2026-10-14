@@ -402,11 +402,22 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
+
+    fn render_prepared(&mut self, prepared: filmcraft_export::PreparedFrame) -> Option<filmcraft_render::Image> {
+        let frame = prepared.downcast::<filmcraft_gpu::export_renderer::PreparedExportFrame>().ok()?;
+        self.0.render_prepared(*frame)
+    }
 }
 
 fn register_gpu_frame_renderer() {
     filmcraft_export::register_frame_renderer(|| {
         filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
+    });
+    // exports report the adapter, or why there is none (`gpu` in the export result, #799)
+    filmcraft_export::register_gpu_adapter_probe(filmcraft_gpu::export_adapter);
+    // decode before taking a renderer from the export's pool (#799)
+    filmcraft_export::register_frame_preparer(|project, seq, t, opts, sources| {
+        filmcraft_gpu::export_renderer::prepare_export_frame(project, seq, t, opts, sources).map(|f| Box::new(f) as filmcraft_export::PreparedFrame)
     });
 }
 

@@ -53,11 +53,21 @@ pub fn decode_json() -> Value {
 /// `convert` part, audio, mux, finish, wait), summed over the exports of this process (diff two readings).
 /// Render and encode overlap (the next batch renders while this one is encoded), so their sum can exceed
 /// the export's wall time; `waitMs` is the encoding side's idle wait for the render.
+/// `gpu` is the GPU compositing status of the export that finished last (`requested`, `adapter`,
+/// `reason`, `frames`, `cpuFrames`; `null` before the first), with the process's GPU and CPU frame
+/// totals in `gpuFrames` / `gpuFallbacks`.
 pub fn export_json() -> Value {
     let hw = filmcraft_export::hw_encode_stats();
     let stages: serde_json::Map<String, Value> =
         filmcraft_export::stage_times().into_iter().map(|(s, ns)| (format!("{}Ms", s.name()), json!(ns as f64 / 1e6))).collect();
-    json!({"hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined}, "stages": stages})
+    let gpu = filmcraft_export::gpu_render_stats();
+    json!({
+        "hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined},
+        "stages": stages,
+        "gpu": filmcraft_export::last_gpu_export_status(),
+        "gpuFrames": gpu.frames,
+        "gpuFallbacks": gpu.fallbacks,
+    })
 }
 
 /// The engine's `perf.stats`.

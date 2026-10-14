@@ -88,3 +88,8 @@ sync_github_name = false
 
 [people.webdevtodayjason]
 display_name = "Jason Brashear"
+
+[people.bsoulai]
+real_name = "Jeremiah Hundley"
+display_name = "Sublime Focus Studio"
+sync_github_name = false

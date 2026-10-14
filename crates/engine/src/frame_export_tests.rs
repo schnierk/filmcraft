@@ -152,3 +152,31 @@ fn an_earlier_deferred_read_does_not_fail_the_export() {
     assert!(!filmcraft_media::pending::is_set());
     std::fs::remove_file(path).unwrap();
 }
+
+/// #799: a Program still composites on the GPU only with `gpuRendering: "auto"`, and says how it
+/// was composited; without a GPU renderer (none is registered in these tests) it falls back to
+/// the CPU picture with a reason. Hostile values are parameter errors.
+#[test]
+fn frame_export_reports_gpu_rendering() {
+    let (mut s, _) = session();
+    let dir = std::env::temp_dir().join(format!("fc-frame-gpu-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (dir.join("off.png"), dir.join("auto.png"));
+    let off = s.execute("file.exportFrame", json!({"target":"program","path":a.to_string_lossy()})).unwrap();
+    assert_eq!(off["gpu"]["requested"], "off", "{off}");
+    assert!(off["gpu"]["adapter"].is_null() && off["gpu"]["cpuFrames"] == 1, "{off}");
+    let auto = s.execute("file.exportFrame", json!({"target":"program","path":b.to_string_lossy(),"gpuRendering":"auto"})).unwrap();
+    assert_eq!(auto["gpu"]["requested"], "auto", "{auto}");
+    assert!(auto["gpu"]["reason"].as_str().is_some_and(|r| !r.is_empty()), "a fallback says why: {auto}");
+    assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap(), "the CPU fallback is the reference picture");
+    let src = s.execute("file.exportFrame", json!({"target":"source","path":dir.join("src.png").to_string_lossy(),"gpuRendering":true})).unwrap();
+    assert!(src.get("gpu").is_none(), "Source stills are not composited: {src}");
+    for bad in [json!(7), json!("fast"), json!(null), json!({"auto": true})] {
+        let p = json!({"target":"program","path":dir.join("bad.png").to_string_lossy(),"gpuRendering":bad});
+        assert!(s.execute("file.exportFrame", p.clone()).is_err(), "{p}");
+    }
+    let perf = s.execute("perf.stats", json!({})).unwrap();
+    assert_eq!(perf["export"]["gpu"]["requested"], "auto", "perf.stats shows the last export's GPU status: {perf}");
+    assert!(perf["export"]["gpuFrames"].is_number() && perf["export"]["gpuFallbacks"].is_number(), "{perf}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

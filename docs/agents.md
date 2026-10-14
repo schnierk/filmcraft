@@ -113,6 +113,12 @@ progress and stop it:
 - `file.exportMedia` with `wait: true`, an export job in `jobs.list` and each `export.queue.list`
   item carry `offlineMedia`: the offline items the export drew the placeholder for (see §2b), `[]`
   when none. The export itself still succeeds; deciding what to do about it is up to the caller.
+- The export's report (the `result` of a waited `file.exportMedia`, a finished job's result) carries
+  `gpu`: `requested` (`off` / `auto`), `adapter` (the GPU the frames were composited on,
+  `"Apple M1 Max (Metal)"`, or `null`), `reason` (why some or all frames were composited on the
+  CPU: `gpuRendering` off, no GPU renderer in this program, no wgpu backend in this build, no
+  adapter, the device failed, frames the GPU plan does not cover; `null` when the GPU drew every
+  frame), `frames` and `cpuFrames`. `perf.stats` repeats the last one as `export.gpu` (#799).
 - Every job in `jobs.list`, and every encoding item of `export.queue.list`, carries `etaSeconds`: the
   time left at the job's speed over the last 15 seconds, `null` until a second of progress has been
   measured (a loudness pass, a seek) and once it is done. The app shows it as `37% · 2:05 left` in the

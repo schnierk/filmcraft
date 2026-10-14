@@ -97,68 +97,99 @@ pub struct ExportRenderer {
     compositor: GpuCompositor,
 }
 
+/// The off-screen device every export renderer shares, and a name for its adapter.
+#[derive(Clone)]
+struct SharedDevice {
+    instance: wgpu::Instance,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    adapter: String,
+}
+
+/// Open an off-screen device on `backends` (no window, no surface). `Err` says why there is
+/// none, in words a CLI user can act on (#799: "fell back" must be told apart from "did not try").
+fn open_device(backends: wgpu::Backends) -> Result<SharedDevice, String> {
+    // A build without a wgpu backend for this platform has no GPU to offer, and
+    // `Instance::new` panics there. `cargo build -p filmcraft-cli` used to be such a build; the
+    // apps now ask for the backends through this crate's `backends` feature.
+    if wgpu::Instance::enabled_backend_features().is_empty() {
+        return Err("this build has no wgpu backend (filmcraft-gpu was built without its `backends` feature)".into());
+    }
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    let instance = wgpu::Instance::new(desc);
+    // Not `request_adapter` without a preference, which takes the first adapter listed: on a
+    // desktop with a discrete GPU and the CPU's integrated one that can be either, and a software
+    // rasteriser is slower than the CPU renderer (`adapter::choose_offscreen`;
+    // `FILMCRAFT_GPU_ADAPTER` names one).
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let adapter = crate::adapter::pick_offscreen(&adapters).map_err(|e| format!("no GPU adapter found ({e}; backends tried: {backends:?})"))?;
+    let info = adapter.get_info();
+    let name = format!("{} ({:?})", info.name, info.backend);
+    // The adapter's own texture size and buffer limits instead of wgpu's portable defaults
+    // (8192 px, 256 MiB), so larger frames stay on the GPU and their read-back buffer fits.
+    let supported = adapter.limits();
+    let required_limits = wgpu::Limits { max_buffer_size: supported.max_buffer_size, ..wgpu::Limits::default().using_resolution(supported) };
+    let descriptor = wgpu::DeviceDescriptor { required_limits, ..Default::default() };
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("the GPU adapter {name} could not open a device: {e}"))?;
+    Ok(SharedDevice { instance, device, queue, adapter: name })
+}
+
+/// The shared export device, opened by the first caller and kept for the process. `Err` is kept
+/// too: a machine without an adapter does not search again on every export.
+fn shared_device() -> Result<SharedDevice, String> {
+    static SHARED: std::sync::OnceLock<Result<SharedDevice, String>> = std::sync::OnceLock::new();
+    let shared = SHARED.get_or_init(|| {
+        let shared = open_device(wgpu::Backends::from_env().unwrap_or_default())?;
+        // wgpu's default handler panics on a validation or out-of-memory error; log it and
+        // send the remaining frames to the CPU instead.
+        shared.device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
+        shared.device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
+        Ok(shared)
+    });
+    let shared = shared.clone()?;
+    if device_failed() {
+        return Err(format!("the GPU export device ({}) failed earlier in this session", shared.adapter));
+    }
+    Ok(shared)
+}
+
+/// The adapter GPU exports composite on (`"Apple M1 Max (Metal)"`), or why there is none.
+/// Opens the shared export device if no export has yet.
+pub fn export_adapter() -> Result<String, String> {
+    shared_device().map(|s| s.adapter)
+}
+
 impl ExportRenderer {
     /// The off-screen device, or `None` when this host has no usable adapter or this build no
-    /// wgpu backend.
+    /// wgpu backend ([`export_adapter`] says which).
     pub fn new() -> Option<Self> {
-        // `None` is kept too: a machine without an adapter does not search again on every export
-        static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
-        let (instance, device, queue) = SHARED
-            .get_or_init(|| {
-                // A build without a wgpu backend for this platform (`cargo build -p filmcraft-cli`
-                // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
-                // panics there.
-                if wgpu::Instance::enabled_backend_features().is_empty() {
-                    return None;
-                }
-                let instance = wgpu::Instance::default();
-                // Not `request_adapter` without a preference, which takes the first adapter listed:
-                // on a desktop with a discrete GPU and the CPU's integrated one that can be either,
-                // and a software rasteriser is slower than the CPU renderer
-                // (`adapter::choose_offscreen`; `FILMCRAFT_GPU_ADAPTER` names one).
-                let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-                let adapter = match crate::adapter::pick_offscreen(&adapters) {
-                    Ok(adapter) => adapter,
-                    Err(why) => {
-                        log::info!("exports render on the CPU: {why}");
-                        return None;
-                    }
-                };
-                // The adapter's own texture size and buffer limits instead of wgpu's portable
-                // defaults (8192 px, 256 MiB), so larger frames stay on the GPU and their
-                // read-back buffer fits.
-                let supported = adapter.limits();
-                let required_limits = wgpu::Limits { max_buffer_size: supported.max_buffer_size, ..wgpu::Limits::default().using_resolution(supported) };
-                let descriptor = wgpu::DeviceDescriptor { required_limits, ..Default::default() };
-                let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
-                // wgpu's default handler panics on a validation or out-of-memory error; log it and
-                // send the remaining frames to the CPU instead.
-                device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
-                device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
-                Some((instance, device, queue))
-            })
-            .as_ref()?
-            .clone();
-        if device_failed() {
-            return None;
-        }
+        Self::try_new().ok()
+    }
+
+    /// [`ExportRenderer::new`], with the reason when there is no renderer.
+    pub fn try_new() -> Result<Self, String> {
+        let SharedDevice { instance, device, queue, .. } = shared_device()?;
         let compositor = GpuCompositor::new(&device, &queue);
-        Some(Self { _instance: instance, device, queue, compositor })
+        Ok(Self { _instance: instance, device, queue, compositor })
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
-        let plan = plan_frame(project, seq, t, opts, sources);
-        match &plan {
+        self.render_prepared(prepare_export_frame(project, seq, t, opts, sources)?)
+    }
+
+    /// [`ExportRenderer::render`] of a frame [`prepare_export_frame`] has prepared.
+    pub fn render_prepared(&mut self, frame: PreparedExportFrame) -> Option<Image> {
+        match &frame.plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } => {
                 if device_failed() {
                     return None;
                 }
-                let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let (w, h, px) = self.compositor.render_export_prepared(&frame.plan, frame.prep.as_ref())?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
                     return None;
@@ -170,6 +201,25 @@ impl ExportRenderer {
             FramePlan::Composite { .. } => None,
         }
     }
+}
+
+/// A frame's plan with its layers converted for upload: the CPU part of a GPU export frame.
+pub struct PreparedExportFrame {
+    plan: FramePlan,
+    prep: Option<crate::PreparedPlan>,
+}
+
+/// The CPU part of [`ExportRenderer::render`]: decode the frame's layers and convert them for
+/// upload. It needs no renderer (and uses rayon), so an export does it before taking one from
+/// its pool (#799). `None` for a frame the export path leaves to the CPU (transitions).
+pub fn prepare_export_frame(project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<PreparedExportFrame> {
+    let plan = plan_frame(project, seq, t, opts, sources);
+    let prep = match &plan {
+        FramePlan::Composite { .. } => return None,
+        FramePlan::Image(_) => None,
+        FramePlan::Layers { .. } => Some(prepare(&plan)),
+    };
+    Some(PreparedExportFrame { plan, prep })
 }
 
 #[cfg(test)]
@@ -319,6 +369,21 @@ mod tests {
         let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
         let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
         assert_parity(&cpu, &gpu, "frame renderer");
+    }
+
+    /// #799: with no adapter (here: no backend to look on, as on a host without a GPU driver)
+    /// opening the export device fails with a reason the export reports, instead of a panic or
+    /// a silent `None`.
+    #[test]
+    fn no_adapter_is_reported_with_a_reason() {
+        let err = open_device(wgpu::Backends::empty()).err().expect("no backends, no adapter");
+        assert!(err.starts_with("no GPU adapter found"), "{err}");
+        // the shared device answers too, whatever this host has: a name or a reason, no panic
+        match export_adapter() {
+            Ok(name) => assert!(!name.is_empty()),
+            Err(why) => assert!(!why.is_empty()),
+        }
+        assert_eq!(ExportRenderer::try_new().is_ok(), export_adapter().is_ok());
     }
 
     #[test]

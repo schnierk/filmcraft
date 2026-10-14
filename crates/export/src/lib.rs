@@ -711,6 +711,9 @@ pub struct Report {
     /// Further files written besides `path` (MXF OP-Atom audio files).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// Whether the frames were composited on the GPU (exports of a sequence; `None` elsewhere).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuExportStatus>,
 }
 
 /// A packet produced by a video encoder.
@@ -919,6 +922,34 @@ pub trait FrameRenderer: Send {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn SourceProvider,
     ) -> Option<filmcraft_render::Image>;
+
+    /// Render a frame whose CPU-side work the registered [`FramePreparer`] has done (decoding
+    /// the layers' media, converting them for upload), or `None` for the CPU renderer. Only
+    /// called with what that preparer returned; renderers without a preparer keep the default.
+    fn render_prepared(&mut self, prepared: PreparedFrame) -> Option<filmcraft_render::Image> {
+        let _ = prepared;
+        None
+    }
+}
+
+/// A frame prepared for a [`FrameRenderer`] by the registered [`FramePreparer`].
+pub type PreparedFrame = Box<dyn std::any::Any + Send>;
+
+/// The CPU-side work of a GPU frame, done by the export worker before it takes a renderer from
+/// the export's pool, so a renderer is held only for GPU work. `None`: the frame goes to the CPU
+/// renderer. Holding a renderer while decoding deadlocked exports (#799): decoders run on rayon,
+/// and a worker waiting for its decode jobs runs other frames' jobs, which waited for a renderer.
+pub type FramePreparer = fn(&Project, ItemId, Tick, filmcraft_render::RenderOptions, &dyn SourceProvider) -> Option<PreparedFrame>;
+
+static FRAME_PREPARER: RwLock<Option<FramePreparer>> = RwLock::new(None);
+
+/// Register the [`FramePreparer`] of the registered frame renderer (replaces the one before).
+pub fn register_frame_preparer(f: FramePreparer) {
+    *FRAME_PREPARER.write().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+pub(crate) fn frame_preparer() -> Option<FramePreparer> {
+    *FRAME_PREPARER.read().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
@@ -950,6 +981,8 @@ pub(crate) fn reset_frame_renderers_for_tests() {
     frame_renderer_factories().write().unwrap_or_else(|e| e.into_inner()).clear();
     GPU_FRAMES.store(0, Ordering::Relaxed);
     GPU_FALLBACKS.store(0, Ordering::Relaxed);
+    *GPU_ADAPTER_PROBE.write().unwrap_or_else(|e| e.into_inner()) = None;
+    *FRAME_PREPARER.write().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Pick the first registered factory that can build a renderer for this host.
@@ -996,6 +1029,138 @@ pub struct GpuRenderStats {
 
 pub fn gpu_render_stats() -> GpuRenderStats {
     GpuRenderStats { frames: GPU_FRAMES.load(Ordering::Relaxed), fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed) }
+}
+
+/// Names the adapter the registered GPU frame renderer composites on (`Ok`), or says why it has
+/// none (`Err`, a sentence for the user: no backend in this build, no adapter, device failed).
+/// The apps register one next to their frame renderer.
+pub type GpuAdapterProbe = fn() -> std::result::Result<String, String>;
+
+static GPU_ADAPTER_PROBE: RwLock<Option<GpuAdapterProbe>> = RwLock::new(None);
+static LAST_GPU_STATUS: Mutex<Option<GpuExportStatus>> = Mutex::new(None);
+
+/// Register the [`GpuAdapterProbe`] (replaces the one registered before).
+pub fn register_gpu_adapter_probe(f: GpuAdapterProbe) {
+    *GPU_ADAPTER_PROBE.write().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+pub(crate) fn gpu_adapter_probe() -> Option<GpuAdapterProbe> {
+    *GPU_ADAPTER_PROBE.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether an export composited on the GPU, and if not why (`gpu` in the export result,
+/// `export.gpu` in `perf.stats`; #799: "fell back" must be told apart from "did not try").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuExportStatus {
+    /// The export's `gpuRendering` setting.
+    pub requested: GpuRendering,
+    /// The adapter the frames were composited on (`"Apple M1 Max (Metal)"`); `null` when no GPU
+    /// renderer was created.
+    pub adapter: Option<String>,
+    /// Why some or all frames were composited on the CPU; `null` when the GPU drew every frame.
+    pub reason: Option<String>,
+    /// Frames composited on the GPU.
+    pub frames: u64,
+    /// Frames composited by the CPU reference renderer.
+    pub cpu_frames: u64,
+}
+
+impl GpuExportStatus {
+    /// The status of an export about to start: `requested`, and the adapter of the `renderers`
+    /// it got, or why it got none (`factories`: frame-renderer factories registered).
+    pub(crate) fn start(requested: GpuRendering, renderers: usize, factories: usize, probe: Option<GpuAdapterProbe>) -> Self {
+        let (adapter, reason) = match requested {
+            GpuRendering::Off => (None, Some("gpuRendering is off: the CPU reference renderer composites every frame".to_string())),
+            GpuRendering::Auto if factories == 0 => (None, Some("this program registers no GPU frame renderer".to_string())),
+            GpuRendering::Auto => match probe.map(|p| p()) {
+                Some(Ok(name)) if renderers > 0 => (Some(name), None),
+                Some(Err(why)) => (None, Some(why)),
+                // a factory that declined although the probe found an adapter, or no probe
+                Some(Ok(name)) => (None, Some(format!("the GPU frame renderer could not be created on {name}"))),
+                None if renderers > 0 => (None, None),
+                None => (None, Some("the GPU frame renderer could not be created".to_string())),
+            },
+        };
+        Self { requested, adapter, reason, frames: 0, cpu_frames: 0 }
+    }
+
+    /// Fill in the frame counts at the end of an export, explaining CPU frames when the GPU
+    /// renderer was there (`busy`: CPU frames that found no free renderer; `failed`: the
+    /// renderer pool was retired after a panic).
+    pub(crate) fn finish(mut self, frames: u64, cpu_frames: u64, busy: u64, failed: bool) -> Self {
+        self.frames = frames;
+        self.cpu_frames = cpu_frames;
+        if self.reason.is_none() && failed {
+            self.reason = Some("the GPU renderer failed during the export; the remaining frames were composited on the CPU".into());
+        } else if self.reason.is_none() && cpu_frames > 0 {
+            let total = frames.saturating_add(cpu_frames);
+            let busy = busy.min(cpu_frames);
+            let planned = cpu_frames - busy;
+            self.reason = Some(match (busy, planned) {
+                (0, _) => format!(
+                    "{cpu_frames} of {total} frames need the CPU compositor (an effect, mask, transition or colour setting the GPU plan does not cover)"
+                ),
+                (_, 0) => format!("{cpu_frames} of {total} frames were composited on the CPU because no GPU renderer was free"),
+                _ => format!(
+                    "{cpu_frames} of {total} frames were composited on the CPU: {busy} found no free GPU renderer, {planned} need an effect, mask, transition or colour setting the GPU plan does not cover"
+                ),
+            });
+        }
+        self
+    }
+}
+
+/// The GPU status of the export that finished last in this process (`perf.stats`).
+pub fn last_gpu_export_status() -> Option<GpuExportStatus> {
+    LAST_GPU_STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+pub(crate) fn set_last_gpu_export_status(s: &GpuExportStatus) {
+    *LAST_GPU_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
+}
+
+/// One frame of sequence `seq` at `t` for a still (`file.exportFrame`): composited by a registered
+/// GPU frame renderer when `requested` is Auto and one can be built, by the CPU reference
+/// renderer otherwise (no renderer, a frame the GPU plan sends to the CPU, a declined frame, a
+/// panicking renderer). Returns the image and how it was composited.
+pub fn render_still(
+    project: &Project,
+    seq: ItemId,
+    t: Tick,
+    opts: filmcraft_render::RenderOptions,
+    sources: &dyn SourceProvider,
+    requested: GpuRendering,
+) -> (filmcraft_render::Image, GpuExportStatus) {
+    let renderer = if requested == GpuRendering::Auto { build_frame_renderer() } else { None };
+    let status = GpuExportStatus::start(requested, usize::from(renderer.is_some()), frame_renderer_factory_count(), gpu_adapter_probe());
+    let mut failed = false;
+    let gpu = match renderer {
+        Some(mut r) if !filmcraft_render::plan::is_cpu_frame(project, seq, t) => {
+            // a panicking renderer must not take the command down with it (AGENTS.md §0.6)
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.render(project, seq, t, opts, sources))) {
+                Ok(img) => img,
+                Err(_) => {
+                    failed = true;
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let (img, status) = match gpu {
+        Some(img) => {
+            note_gpu_frame();
+            (img, status.finish(1, 0, 0, false))
+        }
+        None => (filmcraft_render::render_sequence(project, seq, t, opts, sources), status.finish(0, 1, 0, failed)),
+    };
+    set_last_gpu_export_status(&status);
+    (img, status)
+}
+
+pub(crate) fn frame_renderer_factory_count() -> usize {
+    frame_renderer_factories().read().unwrap_or_else(|e| e.into_inner()).len()
 }
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
@@ -1853,6 +2018,8 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let range = export_range(project, seq, settings)?;
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
+    // the GPU status of the formats rendered through a pipeline (audio-only formats have none)
+    let mut gpu = None;
     let (bytes, nframes) = match settings.format {
         Format::Aac => aac_out::export(project, seq, settings, range, sources, progress)?,
         Format::Wav | Format::Aiff | Format::Flac => {
@@ -1980,6 +2147,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                 let data = std::mem::take(&mut *buf.0.lock().unwrap_or_else(|e| e.into_inner()));
                 total = write_output(settings, &settings.path, data)?;
             }
+            gpu = Some(pipe.gpu_status());
             (total, count)
         }
         _ => {
@@ -1992,7 +2160,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
         progress.finished.store(true, Ordering::Relaxed);
         progress.set_status(format!("Done in {secs:.1}s"));
     }
-    Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
+    Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new(), gpu })
 }
 
 #[cfg(test)]
