@@ -224,7 +224,8 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
         return hevc_factory(w, h, rate, s);
     }
     if format == Format::Av1 {
-        return if cfg!(target_os = "windows") { av1_factory(w, h, rate, s) } else { None };
+        // as with H.265, choosing AV1 is the opt-in: it has no software encoder
+        return av1_factory(w, h, rate, s);
     }
     factory_with(format, w, h, rate, s, |cfg| open(cfg, &Signal::default()))
 }

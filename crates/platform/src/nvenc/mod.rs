@@ -355,9 +355,6 @@ impl Nvenc {
             return Err("frame rate".into());
         }
         let codec = cfg.profile.codec();
-        if codec == Codec::Av1 && !cfg!(target_os = "windows") {
-            return Err("AV1 NVENC encoding is only supported on Windows".into());
-        }
         if codec == Codec::H264 && *signal != Signal::default() {
             return Err("H.264 here is BT.709 without SEI messages".into());
         }

@@ -1,5 +1,5 @@
 //! AV1 NVENC Main 10 regression: bit depth, colour signaling, references and keyframes.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 use filmcraft_platform::nvenc::{Config, Nvenc, Profile, Signal};
 
 #[test]

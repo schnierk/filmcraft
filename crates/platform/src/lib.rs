@@ -145,10 +145,15 @@ pub fn register() -> Availability {
         // @tydude001 on Linux with an NVIDIA GPU, `filmcraft-cli --test cli` hung in 21 of 45 runs
         // with the thread started and in 0 of 45 without it. Whoever answers that properly should
         // join the probe before shutdown rather than not starting it.
+        //
+        // AV1 follows the same rules: the session code is shared with Windows, the CUDA device is
+        // the one H.264 and H.265 already use, and its probe is not warmed either.
         #[cfg(target_pointer_width = "64")]
         {
             filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
             filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+            filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, nvenc::av1_available);
+            filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, nvenc::av1_hdr_available);
         }
         available
     }
