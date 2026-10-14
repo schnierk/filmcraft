@@ -13,7 +13,9 @@
 //! - **bars** (4/4): of the four possible bar phases, the one whose beats carry the most onset
 //!   strength in the low band (≤ 200 Hz: kick drum, bass notes) starts the bars;
 //! - **energy** per beat: the RMS from the beat to the next one, smoothed over five beats (weights
-//!   1 2 3 2 1), divided by the 95th percentile (1 = the loud parts) and clamped to 0..1;
+//!   1 2 3 2 1), stretched from its 10th percentile (0, the quiet parts) to its 95th (1, the loud
+//!   parts) and clamped to 0..1; music whose quiet parts are more than half as loud as its loud parts
+//!   (less than 6 dB apart) is only divided by the 95th percentile, so it stays lively throughout;
 //! - **sections**: bars whose mean energy is below [`CALM_BELOW`] are calm, the others lively;
 //!   music before the first or after the last beat is a section of its own when it lasts two bars
 //!   or more (else part of its neighbour); a run shorter than two bars joins the neighbour closer in
@@ -240,8 +242,13 @@ fn grid_beats(g: &dsp::BeatGrid, work: &[f32], wrate: f64, seconds: f64) -> Beat
         })
         .collect();
     let smoothed = smooth5(&loud);
+    // stretched between the quiet parts (10th percentile) and the loud parts (95th), so a quiet
+    // intro or bridge reads as calm; music whose quiet parts are within 6 dB of its loud parts
+    // keeps the plain ratio to the loud parts (and stays lively)
     let reference = quantile(&smoothed, 0.95);
-    let norm = |v: f64| if reference > 1e-9 { (v / reference).clamp(0.0, 1.0) } else { 0.0 };
+    let floor = quantile(&smoothed, 0.10);
+    let floor = if reference > 1e-9 && floor <= 0.5 * reference { floor } else { 0.0 };
+    let norm = |v: f64| if reference - floor > 1e-9 { ((v - floor) / (reference - floor)).clamp(0.0, 1.0) } else { 0.0 };
     let energy: Vec<f64> = smoothed.iter().map(|&v| norm(v)).collect();
     let phase = downbeat_phase(&g.low);
     let bars: Vec<f64> = beat_t.iter().skip(phase).step_by(4).copied().collect();

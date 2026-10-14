@@ -364,17 +364,23 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
         length = length.min(ms);
     }
     length = length.min(natural.max(8.0) * 1.6);
-    // A film much shorter than its music starts the music where it is lively (an upbeat reel
-    // begins on the chorus, not on a quiet intro): the first lively stretch with the film's
-    // length of music after it, from its first bar.
+    // A film much shorter than its music starts the music where it is liveliest (an upbeat reel
+    // begins on the chorus, not on the intro): of the lively stretches with the film's length of
+    // music after them, the one whose next `length` seconds carry the most energy, from its
+    // first bar.
     let music_offset = match music.and_then(|m| m.beats.as_ref()) {
         Some(b) if plan.mood != "calm" && music_seconds.is_some_and(|ms| length < ms * 0.6) => {
             let snap = |t: f64| b.bars.iter().copied().find(|x| *x >= t - 0.05).unwrap_or(t);
+            let energy_from = |t: f64| {
+                let e: Vec<f64> = b.beats.iter().zip(&b.energy).filter(|(x, _)| **x >= t && **x < t + length).map(|(_, e)| *e).collect();
+                if e.is_empty() { 0.0 } else { e.iter().sum::<f64>() / e.len() as f64 }
+            };
             b.sections
                 .iter()
                 .filter(|x| x.kind == "lively" && b.seconds - x.start >= length)
                 .map(|x| snap(x.start))
-                .find(|t| t.is_finite() && *t > 0.0)
+                .filter(|t| t.is_finite() && *t >= 0.0)
+                .max_by(|a, c| energy_from(*a).total_cmp(&energy_from(*c)))
                 .unwrap_or(0.0)
         }
         _ => 0.0,
