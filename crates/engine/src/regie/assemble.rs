@@ -307,6 +307,27 @@ fn grid(beats: Option<&Beats>, length: f64) -> (Vec<f64>, Vec<bool>) {
     (times, lively)
 }
 
+/// `b` from `offset` seconds on, with times counted from there.
+fn shift_beats(b: &Beats, offset: f64) -> Beats {
+    if !(offset.is_finite() && offset > 0.0) {
+        return b.clone();
+    }
+    let keep = |t: &f64| *t >= offset - 1e-6;
+    Beats {
+        seconds: (b.seconds - offset).max(0.0),
+        bpm: b.bpm,
+        beats: b.beats.iter().filter(|t| keep(t)).map(|t| t - offset).collect(),
+        bars: b.bars.iter().filter(|t| keep(t)).map(|t| t - offset).collect(),
+        energy: b.energy.iter().zip(&b.beats).filter(|(_, t)| keep(t)).map(|(e, _)| *e).collect(),
+        sections: b
+            .sections
+            .iter()
+            .filter(|x| x.end > offset)
+            .map(|x| super::types::Section { kind: x.kind.clone(), start: (x.start - offset).max(0.0), end: x.end - offset })
+            .collect(),
+    }
+}
+
 /// Build the film as one undo step; returns the new sequence and a summary.
 pub fn assemble(s: &mut Session, plan: &Plan, media: &[Medium], music: Option<&Music>) -> Result<Value> {
     let label = if plan.language == "de" { "KI-Regie: Film" } else { "AI Director: film" };
@@ -343,7 +364,23 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
         length = length.min(ms);
     }
     length = length.min(natural.max(8.0) * 1.6);
-    let (beats, lively) = grid(music.and_then(|m| m.beats.as_ref()), length);
+    // A film much shorter than its music starts the music where it is lively (an upbeat reel
+    // begins on the chorus, not on a quiet intro): the first lively stretch with the film's
+    // length of music after it, from its first bar.
+    let music_offset = match music.and_then(|m| m.beats.as_ref()) {
+        Some(b) if plan.mood != "calm" && music_seconds.is_some_and(|ms| length < ms * 0.6) => {
+            let snap = |t: f64| b.bars.iter().copied().find(|x| *x >= t - 0.05).unwrap_or(t);
+            b.sections
+                .iter()
+                .filter(|x| x.kind == "lively" && b.seconds - x.start >= length)
+                .map(|x| snap(x.start))
+                .find(|t| t.is_finite() && *t > 0.0)
+                .unwrap_or(0.0)
+        }
+        _ => 0.0,
+    };
+    let shifted = music.and_then(|m| m.beats.as_ref()).map(|b| shift_beats(b, music_offset));
+    let (beats, lively) = grid(shifted.as_ref(), length);
     let beat = beats
         .windows(2)
         .map(|w| w.get(1).copied().unwrap_or(0.0) - w.first().copied().unwrap_or(0.0))
@@ -456,7 +493,7 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
 
     let title = plan.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| default_title(plan, &chs, media));
     let music_item = music.map(|m| m.item);
-    let built = build(s, plan, &title, &shots, &chs, rate, film_end, music_item)?;
+    let built = build(s, plan, &title, &shots, &chs, rate, film_end, music_item, frame_tick(music_offset, rate))?;
 
     let photos = shots.iter().filter(|x| x.photo).count();
     let videos = shots.len() - photos;
@@ -483,6 +520,9 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
         if music_item.is_some() {
             summary.push("Geschnitten auf den Takt der Musik; die Musik blendet am Ende aus.".into());
         }
+        if music_offset > 0.0 {
+            summary.push(format!("Die Musik beginnt beim lebhaften Teil (ab {}:{:02} im Song).", music_offset as u64 / 60, music_offset as u64 % 60));
+        }
         explain.push(format!("Neue Sequenz in {} × {}, {} Bilder pro Sekunde (Datei ▸ Neu ▸ Sequenz).", plan.width, plan.height, plan.fps));
         explain.push("Die Clips liegen auf Spur V2, jeder Schnitt sitzt auf einem Taktschlag (Clip auf die Zeitleiste ziehen, mit In- und Out-Punkt).".into());
         explain.push("Hochkant-Material steht vor einer unscharfen, abgedunkelten Kopie auf V1 (Effekte ▸ Weichzeichnen ▸ Gaußscher Weichzeichner, Helligkeit & Kontrast).".into());
@@ -505,6 +545,9 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
         ));
         if music_item.is_some() {
             summary.push("Cut to the music's beat; the music fades out at the end.".into());
+        }
+        if music_offset > 0.0 {
+            summary.push(format!("The music starts where it is lively ({}:{:02} into the song).", music_offset as u64 / 60, music_offset as u64 % 60));
         }
         explain.push(format!("A new {} × {} sequence at {} frames per second (File ▸ New ▸ Sequence).", plan.width, plan.height, plan.fps));
         explain.push("The shots are on track V2, every cut on a beat (drag a clip to the timeline with In and Out points).".into());
@@ -607,7 +650,17 @@ fn clips_of(v: &Value) -> Vec<u64> {
 
 /// Place everything (inside the edit group). Returns the sequence id.
 #[allow(clippy::too_many_arguments)]
-fn build(s: &mut Session, plan: &Plan, title: &str, shots: &[Shot], chs: &[Chapter], rate: FrameRate, film_end: Tick, music: Option<u64>) -> Result<(u64,)> {
+fn build(
+    s: &mut Session,
+    plan: &Plan,
+    title: &str,
+    shots: &[Shot],
+    chs: &[Chapter],
+    rate: FrameRate,
+    film_end: Tick,
+    music: Option<u64>,
+    music_in: Tick,
+) -> Result<(u64,)> {
     let de = plan.language == "de";
     let seq = s.execute(
         "file.newSequence",
@@ -762,8 +815,11 @@ fn build(s: &mut Session, plan: &Plan, title: &str, shots: &[Shot], chs: &[Chapt
 
     // the music on A1, fading out with the film
     if let Some(m) = music
-        && let Some(placed) =
-            soft(s, "timeline.place", json!({"item": m, "track": "A1", "time": 0, "sourceIn": 0, "duration": film_end.0, "video": false, "insert": false}))
+        && let Some(placed) = soft(
+            s,
+            "timeline.place",
+            json!({"item": m, "track": "A1", "time": 0, "sourceIn": music_in.0, "duration": film_end.0, "video": false, "insert": false}),
+        )
     {
         for clip in clips_of(&placed) {
             let frames = (rate.as_f64() * 3.0).round() as i64;
