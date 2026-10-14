@@ -136,7 +136,7 @@ pub const CALM_BELOW: f64 = 0.45;
 /// Audio faster than this (Hz) is averaged down first: the beat tracker needs no more.
 const WORK_RATE: u32 = 24_000;
 /// Rate `audio.beats` reads music at (Hz); half of it for music longer than ten minutes.
-const READ_RATE: u32 = 22_050;
+pub(crate) const READ_RATE: u32 = 22_050;
 
 /// The beat grid of mono audio at `rate` Hz (see the module documentation). Never fails: silence,
 /// noise, very short audio or an unusable rate give no beats (`bpm` 0) and one calm section over
@@ -373,7 +373,7 @@ fn sections_of(units: &[Unit], min_len: f64) -> Vec<Section> {
 }
 
 /// The item's audio (its range, at most [`BEATS_MAX_SECONDS`]) as mono at `rate`.
-fn read_mono(src: &dyn MediaSource, range: TimeRange, rate: u32) -> std::result::Result<Vec<f32>, String> {
+pub(crate) fn read_mono(src: &dyn MediaSource, range: TimeRange, rate: u32) -> std::result::Result<Vec<f32>, String> {
     let secs = range.duration.seconds().clamp(0.0, BEATS_MAX_SECONDS);
     let total = (secs * rate as f64) as usize;
     let start = range.start.max(Tick::ZERO).to_units_floor(i64::from(rate));

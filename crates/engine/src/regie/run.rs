@@ -211,16 +211,28 @@ fn capture_fallback(path: &std::path::Path) -> Captured {
     Captured { created: None, modified, location: None, width: 0, height: 0, seconds: None }
 }
 
-/// The best moments of a video (the analysis step's `media.highlights`).
+/// The best moments of a video (as `media.highlights`, with its default settings).
 fn best_moments(src: &filmcraft_media::SharedSource, cancel: &AtomicBool) -> Option<Highlights> {
-    let _ = (src, cancel);
-    None
+    let opts = super::analysis::HighlightOptions::default();
+    match super::analysis::highlights(src.as_ref(), &opts, cancel, &|_, _| {}) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            log::info!("AI Director: no highlights: {e}");
+            None
+        }
+    }
 }
 
-/// The beat grid of a music file (the analysis step's `audio.beats`).
+/// The beat grid of a music file (as `audio.beats`).
 fn beats_of_source(src: &filmcraft_media::SharedSource) -> Option<Beats> {
-    let _ = src;
-    None
+    let info = src.info();
+    if !info.has_audio() {
+        return None;
+    }
+    let range = filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, info.duration);
+    let rate = super::analysis::READ_RATE;
+    let mono = super::analysis::read_mono(src.as_ref(), range, rate).ok()?;
+    Some(super::analysis::beats_from_mono(&mono, rate))
 }
 
 fn stopped(de: bool) -> String {
@@ -327,7 +339,8 @@ fn search(plan: &Plan, cancel: &AtomicBool) -> std::result::Result<Found, String
     for root in &folders {
         walk(root, root, 0, &mut candidates, &mut scanned, cancel);
     }
-    candidates.retain(|c| in_range(c, plan));
+    // the music is chosen by itself: dates and places only narrow the pictures
+    candidates.retain(|c| c.kind == "audio" || in_range(c, plan));
     candidates.sort_by(|a, b| a.created.cmp(&b.created).then(a.path.cmp(&b.path)));
     Ok(Found { candidates, scanned, folders: folders.iter().map(|f| f.display().to_string()).collect() })
 }
