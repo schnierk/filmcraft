@@ -136,6 +136,19 @@ sub-sample estimate, and two trust figures (`confidence` = peak / RMS of the cor
   sub-sample), a 0 dB SNR room with a strong echo, inverted polarity, unrelated signals
   (unreliable) and `max_lag`. Two 10-minute recordings: 2.4 s (release, one core).
 
+## Music remix and beat grid (`remix`)
+
+- `analyze(channels, rate)`, `plan(..)`, `render(..)`: Clip ▸ Remix (beats, tempo and beat
+  self-similarity; cuts at musically similar beat boundaries; see the module documentation).
+- `beat_grid(mono, rate)`: tempo, beats (at the attack) and the low-band (≤ 200 Hz: kick drum,
+  bass) onset strength at each beat, without the similarity analysis; the engine's `audio.beats`
+  builds bars and calm / lively sections on it. Onsets: half-wave rectified log-magnitude spectral
+  flux (≈ 46 ms Hann frames, ¼ hop) computed frame by frame, so memory does not grow with the length
+  of the music; tempo: autocorrelation of the onset envelope (50–200 BPM, log-Gaussian prior at
+  120 BPM); beats: dynamic programming after Ellis (JNMR 2007). Rates 4–384 kHz; one frame of
+  silence goes before the music so a beat at its very start is found. Tested on generated music at
+  11.025–48 kHz: tempo within 1 BPM, every beat within 12 ms (one hop at 16 kHz).
+
 ## Known limits
 
 - Effects assume ≤ the channel count they were built with; extra channels pass through

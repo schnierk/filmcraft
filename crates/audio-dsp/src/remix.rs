@@ -28,6 +28,10 @@
 //! parameters give the same plan.
 //!
 //! Positions are in samples of the analysed signal (`i64`).
+//!
+//! [`beat_grid`] runs only the beat part (onset envelope, tempo, beat tracker) and adds the onset
+//! strength of the low band at each beat (kick drum and bass notes, which mark the bar starts in
+//! most music): the beat grid that pictures are cut to (`audio.beats`).
 
 use crate::fft::Fft;
 
@@ -186,32 +190,79 @@ fn stft_mag(x: &[f32], n: usize, hop: usize) -> Vec<Vec<f32>> {
 }
 
 /// STFT frame for the onset envelope: the power of two nearest to 46 ms (1024 at 22.05 kHz, 2048
-/// at 44.1/48 kHz).
+/// at 44.1/48 kHz), kept within 256 … 16 384 samples whatever the rate.
 fn onset_frame(sr: u32) -> usize {
-    let n = (sr as f64 * 0.046).max(256.0);
+    let n = (sr as f64 * 0.046).clamp(256.0, 16_384.0);
     1usize << n.log2().round() as u32
 }
 
 /// Below this normalised autocorrelation at the beat period there is no usable pulse.
 const MIN_PULSE: f64 = 0.1;
 
+/// Upper edge of the low band (Hz) whose onsets [`beat_grid`] reports: kick drum and bass notes.
+pub const LOW_BAND_HZ: f64 = 200.0;
+
 /// Onset strength per hop: half-wave rectified log-magnitude spectral flux, normalised to unit
 /// standard deviation. Returns (envelope, frame size, hop).
 pub fn onset_envelope(x: &[f32], sr: u32) -> (Vec<f32>, usize, usize) {
+    let (env, _, n, hop) = onset_envelopes(x, sr, 0);
+    (env, n, hop)
+}
+
+/// [`onset_envelope`] of `x` after `pad` samples of silence, and the same flux over the low band
+/// alone (bins 1 … [`LOW_BAND_HZ`]), each normalised to unit standard deviation.
+/// The spectra are not kept (one frame at a time), so memory does not grow with the length of the
+/// music. Returns (envelope, low-band envelope, frame size, hop); frame `t` starts at sample
+/// `t·hop − pad` of `x`.
+fn onset_envelopes(x: &[f32], sr: u32, pad: usize) -> (Vec<f32>, Vec<f32>, usize, usize) {
     let n = onset_frame(sr);
     let hop = n / 4;
-    let mags = stft_mag(x, n, hop);
-    let mut env = vec![0f32; mags.len()];
-    let lg: Vec<Vec<f32>> = mags.iter().map(|m| m.iter().map(|v| (1.0 + 1000.0 * v).ln()).collect()).collect();
-    for t in 1..lg.len() {
-        env[t] = lg[t].iter().zip(&lg[t - 1]).map(|(a, b)| (a - b).max(0.0)).sum();
+    let fft = Fft::new(n);
+    let w = hann(n);
+    let total = x.len().saturating_add(pad);
+    let frames = if total >= n { (total - n) / hop + 1 } else { 1 };
+    let bins = n / 2 + 1;
+    let low_end = ((LOW_BAND_HZ * n as f64 / sr.max(1) as f64) as usize).clamp(1, bins - 1);
+    let mut re = vec![0f32; n];
+    let mut im = vec![0f32; n];
+    let mut prev = vec![0f32; bins];
+    let mut cur = vec![0f32; bins];
+    let mut env = vec![0f32; frames];
+    let mut low = vec![0f32; frames];
+    let flux = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(a, b)| (a - b).max(0.0)).sum() };
+    for t in 0..frames {
+        let s = t * hop;
+        for (i, ((r, m), wi)) in re.iter_mut().zip(im.iter_mut()).zip(&w).enumerate() {
+            let v = (s + i).checked_sub(pad).and_then(|k| x.get(k)).copied().unwrap_or(0.0);
+            *r = v * wi;
+            *m = 0.0;
+        }
+        fft.forward(&mut re, &mut im);
+        for ((c, r), m) in cur.iter_mut().zip(&re).zip(&im) {
+            *c = (1.0 + 1000.0 * (r * r + m * m).sqrt()).ln();
+        }
+        if t > 0 {
+            if let Some(e) = env.get_mut(t) {
+                *e = flux(&cur, &prev);
+            }
+            if let (Some(l), Some(c), Some(p)) = (low.get_mut(t), cur.get(1..=low_end), prev.get(1..=low_end)) {
+                *l = flux(c, p);
+            }
+        }
+        std::mem::swap(&mut prev, &mut cur);
     }
+    unit_sd(&mut env);
+    unit_sd(&mut low);
+    (env, low, n, hop)
+}
+
+/// Divide by the standard deviation (when there is one).
+fn unit_sd(env: &mut [f32]) {
     let mean = env.iter().sum::<f32>() / env.len().max(1) as f32;
     let sd = (env.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / env.len().max(1) as f32).sqrt();
     if sd > 0.0 {
         env.iter_mut().for_each(|v| *v /= sd);
     }
-    (env, n, hop)
 }
 
 /// Beat period in envelope frames from the autocorrelation (50–200 BPM, prior centred at 120 BPM).
@@ -396,23 +447,21 @@ fn local_max(env: &[f32], t: usize, r: usize) -> f32 {
     env[t.saturating_sub(r)..(t + r + 1).min(env.len())].iter().copied().fold(0.0, f32::max)
 }
 
-/// Analyse planar audio (channels are summed to mono).
-pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixError> {
-    let len = channels.iter().map(|c| c.len()).max().unwrap_or(0);
-    let k = 1.0 / channels.len().max(1) as f32;
-    let mono: Vec<f32> = (0..len).map(|i| channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() * k).collect();
-    let (env, n, hop) = onset_envelope(&mono, sample_rate);
-    let frame_rate = sample_rate as f64 / hop as f64;
-    let period = tempo(&env, frame_rate).ok_or(RemixError::NoBeat)?;
-    let mut frames = track_beats(&env, period);
+/// Tempo and beats of an onset envelope with `frame_rate` frames per second: the beat period from
+/// the autocorrelation, the beats by dynamic programming, then weak beats (silence before or
+/// after the music) and off-grid beats removed at both ends. Returns (period in frames, beat
+/// frames, increasing).
+fn beat_frames(env: &[f32], frame_rate: f64) -> Result<(f64, Vec<usize>), RemixError> {
+    let period = tempo(env, frame_rate).ok_or(RemixError::NoBeat)?;
+    let mut frames = track_beats(env, period);
     // weak beats at the edges (silence before / after the music) are not beats
-    let mut strengths: Vec<f32> = frames.iter().map(|&t| local_max(&env, t, 2)).collect();
+    let mut strengths: Vec<f32> = frames.iter().map(|&t| local_max(env, t, 2)).collect();
     strengths.sort_by(f32::total_cmp);
     let median = strengths.get(strengths.len() / 2).copied().unwrap_or(0.0);
-    while frames.first().is_some_and(|&t| local_max(&env, t, 2) < 0.3 * median) {
+    while frames.first().is_some_and(|&t| local_max(env, t, 2) < 0.3 * median) {
         frames.remove(0);
     }
-    while frames.last().is_some_and(|&t| local_max(&env, t, 2) < 0.3 * median) {
+    while frames.last().is_some_and(|&t| local_max(env, t, 2) < 0.3 * median) {
         frames.pop();
     }
     // …and edge beats off the grid (the tracker's end search can settle on an off-beat)
@@ -423,11 +472,27 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
     while frames.len() > 2 && off_grid(frames[0], frames[1]) {
         frames.remove(0);
     }
-    // the flux of frame t peaks as soon as an attack enters the newer window, at about
-    // t·hop + n − ¾·hop (measured on generated drums); joints sit half a crossfade earlier so a joint's fade is over
-    // when the beat's attack starts
-    let mut beats: Vec<i64> =
-        frames.iter().map(|&t| (t * hop + n) as i64 - 3 * hop as i64 / 4 - beat_lead(sample_rate)).filter(|&b| b > 0 && b < len as i64).collect();
+    Ok((period, frames))
+}
+
+/// Sample position of the attack whose flux peaks in frame `t` (frame size `n`): the flux of frame
+/// `t` peaks as soon as an attack enters the newer window, at about t·hop + n − ¾·hop (measured on
+/// generated drums).
+fn attack(t: usize, n: usize, hop: usize) -> i64 {
+    (t * hop + n) as i64 - 3 * hop as i64 / 4
+}
+
+/// Analyse planar audio (channels are summed to mono).
+pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixError> {
+    let len = channels.iter().map(|c| c.len()).max().unwrap_or(0);
+    let k = 1.0 / channels.len().max(1) as f32;
+    let mono: Vec<f32> = (0..len).map(|i| channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() * k).collect();
+    let (env, n, hop) = onset_envelope(&mono, sample_rate);
+    let frame_rate = sample_rate as f64 / hop as f64;
+    let (period, frames) = beat_frames(&env, frame_rate)?;
+    // joints sit half a crossfade before the attack, so a joint's fade is over when the beat's
+    // attack starts
+    let mut beats: Vec<i64> = frames.iter().map(|&t| attack(t, n, hop) - beat_lead(sample_rate)).filter(|&b| b > 0 && b < len as i64).collect();
     beats.dedup();
     if beats.len() < 2 * MIN_PIECE_BEATS + 2 {
         return Err(if beats.len() < 4 { RemixError::NoBeat } else { RemixError::TooShort });
@@ -442,6 +507,61 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
     }
     let period_s = period * hop as f64;
     Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim })
+}
+
+// ------------------------------------------------------------------------------------- beat grid
+
+/// The beat grid of a piece of music ([`beat_grid`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeatGrid {
+    pub sample_rate: u32,
+    /// Analysed length (samples).
+    pub len: i64,
+    /// Beat positions (samples, at the attack), increasing, all in `0..len`.
+    pub beats: Vec<i64>,
+    /// Beat period (samples).
+    pub period: f64,
+    /// Tempo (beats per minute).
+    pub bpm: f64,
+    /// Onset strength of the low band (≤ [`LOW_BAND_HZ`]) at each beat, in standard deviations of
+    /// that band's onset envelope: kick drums and bass notes, which mark the bar starts in most
+    /// music.
+    pub low: Vec<f32>,
+}
+
+/// Sample rates [`beat_grid`] accepts (Hz).
+pub const GRID_RATES: std::ops::RangeInclusive<u32> = 4_000..=384_000;
+
+/// Tempo and beats of mono audio: the onset envelope, tempo estimate and beat tracker of
+/// [`analyze`], without the similarity analysis. One STFT frame of silence goes before the music,
+/// so an attack right at its start is found too (not after it: music cut off in the middle of a
+/// sound would end on a false onset). Memory stays proportional to the number of STFT frames (the
+/// spectra are not kept). Errors when the rate is outside [`GRID_RATES`] or fewer than four beats
+/// are found.
+pub fn beat_grid(mono: &[f32], sample_rate: u32) -> Result<BeatGrid, RemixError> {
+    if !GRID_RATES.contains(&sample_rate) {
+        return Err(RemixError::NoBeat);
+    }
+    let n = onset_frame(sample_rate);
+    let (env, low, n, hop) = onset_envelopes(mono, sample_rate, n);
+    let frame_rate = sample_rate as f64 / hop as f64;
+    let (period, frames) = beat_frames(&env, frame_rate)?;
+    let len = i64::try_from(mono.len()).unwrap_or(i64::MAX);
+    let mut beats: Vec<i64> = Vec::with_capacity(frames.len());
+    let mut strength = Vec::with_capacity(frames.len());
+    for &t in &frames {
+        // positions in the padded signal minus the padding
+        let b = attack(t, n, hop) - n as i64;
+        if (0..len).contains(&b) && beats.last().is_none_or(|&p| p < b) {
+            beats.push(b);
+            strength.push(local_max(&low, t, 2));
+        }
+    }
+    if beats.len() < 4 {
+        return Err(RemixError::NoBeat);
+    }
+    let period_s = period * hop as f64;
+    Ok(BeatGrid { sample_rate, len, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, low: strength })
 }
 
 // ------------------------------------------------------------------------------------- planning
@@ -848,6 +968,72 @@ mod tests {
                 assert!((v - exp).abs() < 1e-6);
             }
         }
+    }
+
+    /// The frame-by-frame envelope is the one computed from the stored spectra, bit for bit.
+    #[test]
+    fn streaming_envelope_matches_the_stored_spectra() {
+        for sr in [SR, 48_000] {
+            let (m, _) = test_music(sr, 120.0, 4, 3);
+            let (env, n, hop) = onset_envelope(&m[0], sr);
+            let lg: Vec<Vec<f32>> = stft_mag(&m[0], n, hop).iter().map(|m| m.iter().map(|v| (1.0 + 1000.0 * v).ln()).collect()).collect();
+            let mut want = vec![0f32; lg.len()];
+            for t in 1..lg.len() {
+                want[t] = lg[t].iter().zip(&lg[t - 1]).map(|(a, b)| (a - b).max(0.0)).sum();
+            }
+            unit_sd(&mut want);
+            assert_eq!(env, want);
+        }
+    }
+
+    #[test]
+    fn beat_grid_finds_tempo_beats_and_kicks() {
+        for (bpm, sr) in [(120.0, SR), (90.0, 44_100), (128.0, 48_000), (100.0, 16_000), (140.0, 11_025)] {
+            let (m, truth) = test_music(sr, bpm, 16, 7);
+            let mono: Vec<f32> = m[0].iter().zip(&m[1]).map(|(l, r)| 0.5 * (l + r)).collect();
+            let g = beat_grid(&mono, sr).expect("beat grid");
+            assert!((g.bpm - bpm).abs() < 1.0, "bpm {} vs {bpm} at {sr} Hz", g.bpm);
+            assert_eq!(g.len, mono.len() as i64);
+            assert_eq!(g.low.len(), g.beats.len());
+            // every beat within 12 ms (or a hop, 16 ms at 16 kHz) of a true beat; the one at
+            // sample 0 is found too (padding)
+            let tol = ((0.012 * sr as f64) as i64).max(onset_frame(sr) as i64 / 4);
+            let nearest = |b: i64| truth.iter().enumerate().min_by_key(|(_, t)| (*t - b).abs()).map(|(i, t)| (i, (t - b).abs())).unwrap();
+            for &b in &g.beats {
+                assert!(nearest(b).1 <= tol, "{bpm} BPM at {sr} Hz: beat {b} off by {}", nearest(b).1);
+            }
+            assert!(g.beats.len() + 1 >= truth.len(), "{} beats of {}", g.beats.len(), truth.len());
+            assert!(g.beats.first().is_some_and(|&b| b <= tol), "first beat {:?}", g.beats.first());
+            // the kick (beats 1 and 3) is stronger in the low band than the snare (2 and 4)
+            let (mut kick, mut snare) = (Vec::new(), Vec::new());
+            for (&b, &s) in g.beats.iter().zip(&g.low) {
+                if nearest(b).0 % 2 == 0 { kick.push(s) } else { snare.push(s) }
+            }
+            let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
+            assert!(mean(&kick) > 1.2 * mean(&snare), "{bpm} BPM at {sr} Hz: kick {} snare {}", mean(&kick), mean(&snare));
+        }
+    }
+
+    #[test]
+    fn beat_grid_refuses_silence_short_audio_and_odd_rates() {
+        assert_eq!(beat_grid(&[], SR), Err(RemixError::NoBeat));
+        assert_eq!(beat_grid(&vec![0.0; SR as usize * 5], SR), Err(RemixError::NoBeat));
+        let (m, _) = test_music(SR, 120.0, 8, 1);
+        assert!(beat_grid(&m[0][..SR as usize / 10], SR).is_err());
+        for sr in [0, 1, 3_999, 384_001, u32::MAX] {
+            assert_eq!(beat_grid(&m[0], sr), Err(RemixError::NoBeat), "{sr} Hz");
+        }
+        // the extreme accepted rates work on short input
+        for sr in [4_000, 384_000] {
+            let _ = beat_grid(&m[0][..SR as usize], sr);
+        }
+        // damaged samples do not panic
+        let mut bad = m[0].clone();
+        for (i, v) in bad.iter_mut().enumerate().step_by(1009) {
+            *v = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX][i % 4];
+        }
+        let _ = beat_grid(&bad, SR);
+        let _ = analyze(&[&bad], SR);
     }
 
     #[test]
