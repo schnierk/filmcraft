@@ -57,6 +57,8 @@ fn assemble_builds_one_undoable_film_with_chapters_blurred_portraits_and_titles(
                 ..Default::default()
             },
             highlights: None,
+            background: None,
+            background_item: None,
         })
         .collect();
     let undo_before = s.history.undo.len();
