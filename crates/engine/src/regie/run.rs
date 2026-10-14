@@ -93,6 +93,7 @@ pub(crate) fn start(s: &mut Session, p: &Value) -> Result<Value> {
                     bytes: 0,
                     render_fps: 0.0,
                     extra_files: Vec::new(),
+                    gpu: None,
                 })
             }
             Err(e) => {
