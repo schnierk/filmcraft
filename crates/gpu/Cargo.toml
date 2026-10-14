@@ -9,6 +9,12 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The native wgpu backends (Metal, Vulkan, Direct3D 12, OpenGL). Without them the off-screen
+# export renderer has no adapter to open. The desktop app gets them through eframe; the CLI asks
+# for them here, so `cargo build -p filmcraft-cli` composites exports on the GPU too (#799).
+backends = ["wgpu/metal", "wgpu/vulkan", "wgpu/dx12", "wgpu/gles"]
+
 [dependencies]
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
