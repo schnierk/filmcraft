@@ -258,7 +258,10 @@ fn chapters(media: &[Medium], order: &[usize], language: &str) -> Vec<Chapter> {
         }
         names.sort_by_key(|a| std::cmp::Reverse(a.1));
         c.title = names.first().map(|n| n.0.clone()).unwrap_or_default();
-        let months: Vec<(i32, u32)> = c.members.iter().filter_map(|i| media.get(*i)).filter_map(|m| month_of(&m.candidate)).collect();
+        let all: Vec<(i32, u32)> = c.members.iter().filter_map(|i| media.get(*i)).filter_map(|m| month_of(&m.candidate)).collect();
+        // a stray file with a wrong date does not stretch the chapter's months
+        let enough = (all.len() / 10).max(1);
+        let months: Vec<(i32, u32)> = all.iter().copied().filter(|m| all.iter().filter(|x| *x == m).count() >= enough).collect();
         if let (Some(a), Some(b)) = (months.iter().min(), months.iter().max()) {
             c.subtitle = if a == b {
                 format!("{} {}", super::plan::month_name(a.1, language), a.0)
@@ -356,13 +359,17 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
         let mut shots: Vec<Shot> = Vec::new();
         let mut beat_index = 0usize;
         let mut t = 0.0f64;
+        // short shots in a row; after two, a longer one lets the picture breathe
+        let mut short_run = 0u32;
         'chapters: for (ci, members) in picks.iter().enumerate() {
             for &i in members {
                 let Some(m) = media.get(i) else { continue };
                 let Some(item) = m.candidate.item else { continue };
                 let photo = m.candidate.kind == "photo";
                 let is_lively = lively.get(beat_index).copied().unwrap_or(false);
-                let n_beats = if photo || plan.mood == "calm" || !is_lively { 4 } else { 2 };
+                let short = !photo && plan.mood != "calm" && is_lively && short_run < 2;
+                let n_beats = if short { 2 } else { 4 };
+                short_run = if short { short_run + 1 } else { 0 };
                 let mut next = beat_index + n_beats;
                 // never shorter than 0.8 s
                 while beats.get(next).is_some_and(|b| *b - t < 0.8) {
