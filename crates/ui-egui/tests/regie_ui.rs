@@ -214,19 +214,19 @@ fn understand_shows_the_plan_and_its_fields_change_it() {
     d.click("panel.menu.Regie");
     d.click("panel.menu.Regie.maximize");
     d.click("regie.request");
-    d.type_text("Holiday recap of this year, upbeat, about three minutes");
-    assert_eq!(d.regie()["request"], "Holiday recap of this year, upbeat, about three minutes");
+    d.type_text("Holiday recap, upbeat");
+    assert_eq!(d.regie()["request"], "Holiday recap, upbeat");
     d.click("regie.understand");
     let r = d.regie();
     assert_eq!(r["error"], "", "{r}");
     let plan = &r["plan"];
-    // the engine stub echoes the wish with the default values
-    assert_eq!(plan["request"], "Holiday recap of this year, upbeat, about three minutes");
+    // the engine reads the wish by its rules (phones film at 30 frames per second)
+    assert_eq!(plan["request"], "Holiday recap, upbeat");
     assert_eq!(plan["aspect"], "16:9");
     d.frames(2);
     assert!(d.label("regie.aspect").starts_with("16:9"), "{}", d.label("regie.aspect"));
     assert_eq!(d.label("regie.resolution"), "HD 1920×1080");
-    assert_eq!(d.label("regie.fps"), "25 fps");
+    assert_eq!(d.label("regie.fps"), "30 fps");
     assert_eq!(d.label("regie.mood"), "Upbeat");
     d.snapshot("plan");
     // change the key fields
@@ -263,7 +263,7 @@ fn understand_shows_the_plan_and_its_fields_change_it() {
     let r = d.regie();
     assert_eq!(r["plan"]["mood"], "calm", "kept: {r}");
     d.click("regie.understand");
-    assert_eq!(d.regie()["plan"]["request"], "Holiday recap of this year, upbeat, about three minutes with music");
+    assert_eq!(d.regie()["plan"]["request"], "Holiday recap, upbeat with music");
 }
 
 #[test]

@@ -37,7 +37,8 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             params: r#"{"request":str?,"plan":Plan?,"folders":[str]?,"wait":bool=false}"#,
             enabled: always,
             run: super::run::start,
-            journal: true,
+            // the job's build is recorded as its own undo step; replaying the request is not
+            journal: false,
         },
         CommandSpec {
             id: "regie.status",
@@ -347,11 +348,31 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
     let total_shots = ((length / avg_shot).floor() as usize).max(1);
     let weights: Vec<f64> = chs.iter().map(|c| (c.members.len() as f64).sqrt()).collect();
     let wsum: f64 = weights.iter().sum::<f64>().max(1e-9);
-    let mut picks: Vec<Vec<usize>> = Vec::new();
-    for (c, w) in chs.iter().zip(&weights) {
-        let want = ((total_shots as f64 * w / wsum).round() as usize).clamp(2.min(c.members.len()), c.members.len());
-        picks.push(pick(media, &c.members, want));
+    let mut wants: Vec<usize> =
+        chs.iter().zip(&weights).map(|(c, w)| ((total_shots as f64 * w / wsum).round() as usize).clamp(2.min(c.members.len()), c.members.len())).collect();
+    // a photo lasts a bar, a video shot about three beats: while that is shorter than the film
+    // should be, chapters with unused media get more shots (the biggest spare first)
+    let estimate = |i: &usize| if media.get(*i).is_some_and(|m| m.candidate.kind == "photo") { bar } else { beat * 3.0 };
+    for _ in 0..12 {
+        let total: f64 = chs.iter().zip(&wants).map(|(c, w)| pick(media, &c.members, *w).iter().map(estimate).sum::<f64>()).sum();
+        let deficit = length - total;
+        if deficit < bar {
+            break;
+        }
+        let spare: Vec<usize> = chs.iter().zip(&wants).map(|(c, w)| c.members.len().saturating_sub(*w)).collect();
+        let spare_sum: usize = spare.iter().sum();
+        if spare_sum == 0 {
+            break;
+        }
+        let extra = ((deficit / (beat * 3.0)).ceil() as usize).max(1);
+        for (k, sp) in spare.iter().enumerate() {
+            let share = (extra * sp).div_ceil(spare_sum).min(*sp);
+            if let Some(w) = wants.get_mut(k) {
+                *w += share;
+            }
+        }
     }
+    let picks: Vec<Vec<usize>> = chs.iter().zip(&wants).map(|(c, w)| pick(media, &c.members, *w)).collect();
 
     // lay the shots on the grid
     let mut shots: Vec<Shot> = Vec::new();

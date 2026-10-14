@@ -31,6 +31,8 @@ pub struct Analysis {
     /// Music file and its beats.
     pub music: Option<(String, Option<Beats>)>,
     pub scanned: u64,
+    /// Photos and videos in formats FilmCraft cannot import (HEIC, …) and unreadable files.
+    pub skipped: u64,
 }
 
 /// A running `regie.run` job.
@@ -134,7 +136,7 @@ fn analyse(
     if cancel.load(Ordering::Relaxed) {
         return Err(stopped(de));
     }
-    let scanned = found.scanned;
+    let (scanned, skipped) = (found.scanned, found.skipped);
     let mut videos: Vec<Candidate> = found.candidates.iter().filter(|c| c.kind == "video" && plan.videos).cloned().collect();
     let mut photos: Vec<Candidate> = found.candidates.iter().filter(|c| c.kind == "photo" && plan.photos).cloned().collect();
     let audio: Vec<Candidate> = found.candidates.iter().filter(|c| c.kind == "audio").cloned().collect();
@@ -189,26 +191,7 @@ fn analyse(
         None => None,
     };
     progress(total, total, String::new());
-    Ok(Analysis { plan: plan.clone(), media, music, scanned })
-}
-
-/// What is known about a file without reading its metadata (the library step replaces it).
-struct Captured {
-    created: Option<String>,
-    modified: Option<String>,
-    location: Option<[f64; 2]>,
-    width: u32,
-    height: u32,
-    seconds: Option<f64>,
-}
-
-fn capture_fallback(path: &std::path::Path) -> Captured {
-    let modified = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| crate::media_browser::format_date(d.as_secs()).replacen(' ', "T", 1) + ":00Z");
-    Captured { created: None, modified, location: None, width: 0, height: 0, seconds: None }
+    Ok(Analysis { plan: plan.clone(), media, music, scanned, skipped })
 }
 
 /// The best moments of a video (as `media.highlights`, with its default settings).
@@ -320,6 +303,16 @@ fn finish(s: &mut Session, a: Analysis) -> Result<Value> {
         let music = a.music.as_ref().and_then(|(path, beats)| item_for_path(s, path).map(|i| Music { item: i.0, beats: beats.clone() }));
         let mut v = super::assemble::assemble_in(s, &plan, &media, music.as_ref())?;
         v["scanned"] = json!(a.scanned);
+        v["skipped"] = json!(a.skipped);
+        if a.skipped > 0
+            && let Some(sum) = v.get_mut("summary").and_then(Value::as_array_mut)
+        {
+            sum.push(json!(if de {
+                format!("{} Dateien konnte ich nicht verwenden (z. B. HEIC-Fotos vom iPhone: in den Fotos-Einstellungen „Maximale Kompatibilität“ wählen oder als JPEG exportieren).", a.skipped)
+            } else {
+                format!("{} files could not be used (for example HEIC photos from an iPhone: choose “Most Compatible” in the camera settings or export them as JPEG).", a.skipped)
+            }));
+        }
         Ok(v)
     })
 }
@@ -328,80 +321,35 @@ fn finish(s: &mut Session, a: Analysis) -> Result<Value> {
 pub struct Found {
     pub candidates: Vec<Candidate>,
     pub scanned: u64,
+    pub skipped: u64,
     pub folders: Vec<String>,
 }
 
-/// Search the plan's folders for its media (capture date, place and kind filters).
+/// Search the plan's folders (the default picture, video and music folders when it names none):
+/// photos and videos through the plan's dates and places, the music by itself.
 fn search(plan: &Plan, cancel: &AtomicBool) -> std::result::Result<Found, String> {
-    let folders: Vec<std::path::PathBuf> = plan.folders.iter().map(|f| expand_home(f)).collect();
-    let mut candidates = Vec::new();
-    let mut scanned = 0u64;
-    for root in &folders {
-        walk(root, root, 0, &mut candidates, &mut scanned, cancel);
+    let mut folders: Vec<std::path::PathBuf> = plan.folders.iter().map(|f| expand_home(f)).collect();
+    if folders.is_empty() {
+        folders = super::library::default_folders();
     }
-    // the music is chosen by itself: dates and places only narrow the pictures
-    candidates.retain(|c| c.kind == "audio" || in_range(c, plan));
-    candidates.sort_by(|a, b| a.created.cmp(&b.created).then(a.path.cmp(&b.path)));
-    Ok(Found { candidates, scanned, folders: folders.iter().map(|f| f.display().to_string()).collect() })
+    if folders.is_empty() {
+        return Err(if plan.language == "de" {
+            "Ich weiß nicht, wo ich suchen soll: bitte einen Ordner angeben.".into()
+        } else {
+            "I don't know where to look: please add a folder.".into()
+        });
+    }
+    let pictures = super::library::find_media(&folders, &super::library::MediaFilter::from_plan(plan), cancel);
+    let music_filter = super::library::MediaFilter { kinds: vec!["audio".to_string()], ..Default::default() };
+    let music = super::library::find_media(&folders, &music_filter, cancel);
+    let mut candidates = pictures.candidates;
+    candidates.extend(music.candidates);
+    Ok(Found { candidates, scanned: pictures.scanned, skipped: pictures.skipped, folders: folders.iter().map(|f| f.display().to_string()).collect() })
 }
 
 fn expand_home(f: &str) -> std::path::PathBuf {
-    match (f.strip_prefix("~/"), std::env::var_os("HOME")) {
+    match (f.strip_prefix("~/"), crate::media_browser::std_home_dir()) {
         (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
         _ => std::path::PathBuf::from(f),
-    }
-}
-
-fn in_range(c: &Candidate, plan: &Plan) -> bool {
-    let day = c.created.as_deref().or(c.modified.as_deref()).and_then(|d| d.get(..10)).unwrap_or("");
-    let after = plan.from.as_deref().is_none_or(|f| day.is_empty() || day >= f);
-    let before = plan.to.as_deref().is_none_or(|t| day.is_empty() || day <= t);
-    let place = plan.places.is_empty() || {
-        let hay = format!("{} {} {}", c.place.clone().unwrap_or_default(), c.folder, c.path).to_lowercase();
-        plan.places.iter().any(|p| hay.contains(&p.to_lowercase()))
-    };
-    after && before && place
-}
-
-/// Fallback walk (the library step's search replaces it): files by extension.
-fn walk(root: &std::path::Path, dir: &std::path::Path, depth: usize, out: &mut Vec<Candidate>, scanned: &mut u64, cancel: &AtomicBool) {
-    if depth > 8 || *scanned > 50_000 || cancel.load(Ordering::Relaxed) {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let path = e.path();
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
-        let Ok(ft) = e.file_type() else { continue };
-        if ft.is_dir() {
-            walk(root, &path, depth + 1, out, scanned, cancel);
-            continue;
-        }
-        *scanned += 1;
-        let ext = path.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
-        let kind = match ext.as_str() {
-            "mp4" | "mov" | "m4v" | "mkv" | "webm" | "avi" | "mts" | "m2ts" => "video",
-            "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp" | "bmp" => "photo",
-            "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "opus" | "aif" | "aiff" => "audio",
-            _ => continue,
-        };
-        let folder = path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let info = capture_fallback(&path);
-        out.push(Candidate {
-            path: path.to_string_lossy().into_owned(),
-            kind: kind.into(),
-            folder,
-            created: info.created,
-            modified: info.modified,
-            location: info.location,
-            width: info.width,
-            height: info.height,
-            seconds: info.seconds,
-            ..Default::default()
-        });
-        let _ = root;
     }
 }
