@@ -133,6 +133,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => return err(format!("bad `tts`: {e}")),
                 }
             }
+            // AI Director panel (`panels::regie::RegieUi`: request, folders, plan, sections…), merged
+            if let Some(patch) = p.get("regie") {
+                let mut cur = serde_json::to_value(&app.ui.regie).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value::<crate::panels::regie::RegieUi>(cur) {
+                    Ok(d) => app.ui.regie = d.sanitized(),
+                    Err(e) => return err(format!("bad `regie`: {e}")),
+                }
+            }
             if let Some(t) = s("tool") {
                 match Tool::from_name(t) {
                     Some(t) => app.ui.tool = t,

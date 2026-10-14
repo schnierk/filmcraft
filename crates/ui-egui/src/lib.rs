@@ -855,7 +855,7 @@ impl FilmcraftApp {
         if !self.ui.dock.contains(p) && !self.ui.floating.iter().any(|group| group.panels.contains(&p)) {
             let near = match p {
                 // a side panel beside Properties (or Essential Sound), never over the Program monitor
-                PanelKind::TextToSpeech => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
+                PanelKind::TextToSpeech | PanelKind::Regie => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
                     .into_iter()
                     .find(|k| self.ui.dock.contains(*k))
                     .unwrap_or(PanelKind::Program),
@@ -1774,6 +1774,8 @@ impl FilmcraftApp {
         if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // AI Director: follow the film being made (`regie.status`, at most every 250 ms)
+        panels::regie::poll(self, &ctx);
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);

@@ -3610,3 +3610,63 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+
+# AI Director panel (Window ▸ AI Director).
+	AI Director	Director IA
+	Say what film you want. I'll build it from your own media — every cut stays editable.	Di qué película quieres. La crearé con tus propios medios y cada corte seguirá siendo editable.
+	Describe your film: what, how long, which format, which mood	Describe tu película: qué, cuánto dura, qué formato, qué ambiente
+	Holiday recap 16:9 4K, about 3 minutes	Resumen de vacaciones 16:9 4K, unos 3 minutos
+	Instagram reel 9:16, 30 seconds, fast	Reel de Instagram 9:16, 30 segundos, rápido
+	Birthday slideshow with music	Presentación de cumpleaños con música
+	Music video cut to my song	Videoclip montado al ritmo de mi canción
+	Folders to search	Carpetas donde buscar
+	Pictures, Videos, Music (the default folders)	Imágenes, Videos, Música (las carpetas predeterminadas)
+	Remove folder	Quitar carpeta
+	Add folder…	Añadir carpeta…
+	That is enough folders. Remove one before adding another.	Ya hay suficientes carpetas. Quita una antes de añadir otra.
+	Understand	Entender
+	Make film	Hacer película
+	Type what film you want first.	Primero escribe qué película quieres.
+	The AI Director can't do this yet in this version of FilmCraft.	El Director IA todavía no puede hacer esto en esta versión de FilmCraft.
+	Not possible right now: {why}	Ahora no es posible: {why}
+	Something went wrong: {e}	Algo salió mal: {e}
+	The AI Director's answer could not be read.	No se pudo leer la respuesta del Director IA.
+	“{date}” is not a date like 2026-07-31.	“{date}” no es una fecha como 2026-07-31.
+	Starting…	Empezando…
+	Making your film…	Haciendo tu película…
+	Stopping…	Deteniendo…
+	Your film is ready.	Tu película está lista.
+	Stopped. No film was made.	Detenido. No se hizo ninguna película.
+	The film could not be made: {e}	No se pudo hacer la película: {e}
+	The AI Director stopped without making a film.	El Director IA se detuvo sin hacer ninguna película.
+	The film's sequence is no longer in the project.	La secuencia de la película ya no está en el proyecto.
+	Other changes came after the film. Use Edit ▸ Undo or the History panel.	Hubo otros cambios después de la película. Usa Edición ▸ Deshacer o el panel Historial.
+	The film was taken back.	La película se ha deshecho.
+	Length: {time}	Duración: {time}
+	{n} clips	{n} clips
+	{n} chapters	{n} capítulos
+	1 clip	1 clip
+	1 chapter	1 capítulo
+	Searched in: {folders}	Buscado en: {folders}
+	Play	Reproducir
+	Explain how	Explicar cómo
+	What I did, and how you can do it by hand:	Lo que hice y cómo puedes hacerlo a mano:
+	No steps were reported.	No se informó de ningún paso.
+	What I understood	Lo que entendí
+	Press Understand to see what I make of your wish.	Pulsa Entender para ver cómo interpreto tu deseo.
+	You changed the wish. Press Understand to update this.	Has cambiado el deseo. Pulsa Entender para actualizar esto.
+	Nothing specific yet: the settings below are used.	Nada concreto todavía: se usan los ajustes de abajo.
+	Aspect ratio	Relación de aspecto
+	Wide	Panorámico
+	Upright (Reels, Shorts)	Vertical (Reels, Shorts)
+	Portrait	Retrato
+	Resolution	Resolución
+	Frame rate	Velocidad de fotogramas
+	0 = automatic	0 = automático
+	Dates	Fechas
+	YYYY-MM-DD	AAAA-MM-DD
+	Mood	Ambiente
+	Upbeat	Alegre
+	Calm	Tranquilo
+	Epic	Épico
+	Made from the content	Según el contenido
