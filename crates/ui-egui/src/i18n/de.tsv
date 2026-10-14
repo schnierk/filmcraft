@@ -6,7 +6,7 @@
 # apps, text addresses the user informally ("du") and commands use the infinitive ("Projekt
 # öffnen…"). Product, format and feature names (FilmCraft, ArtCraft, Lumetri, Essential Graphics,
 # EDL, AAF…) keep their spelling. This catalog covers every menu, including the native macOS
-# app menu; anything else is shown in English.
+# app menu, and the whole AI Director panel (KI-Regie); anything else is shown in English.
 #
 # Terms: track = Spur, bin = Ablage, marker = Marker, playhead = Abspielposition, In/Out = In-/Out-
 # Punkt, transition = Übergang, frame hold = Standbild, panel = Bedienfeld, workspace =
@@ -391,3 +391,66 @@
 	Zoom to Sequence	Auf Sequenz zoomen
 	Project Notes	Projektnotizen
 
+# AI Director panel (Window ▸ AI Director, KI-Regie): every string of the panel, not only the menu.
+	AI Director	KI-Regie
+	Say what film you want. I'll build it from your own media — every cut stays editable.	Sag, welchen Film du möchtest. Ich baue ihn aus deinen eigenen Medien – jeder Schnitt bleibt bearbeitbar.
+	Describe your film: what, how long, which format, which mood	Beschreibe deinen Film: was, wie lang, welches Format, welche Stimmung
+	Holiday recap 16:9 4K, about 3 minutes	Urlaubsrückblick 16:9 4K, etwa 3 Minuten
+	Instagram reel 9:16, 30 seconds, fast	Instagram-Reel 9:16, 30 Sekunden, schnell
+	Birthday slideshow with music	Geburtstags-Diashow mit Musik
+	Music video cut to my song	Musikvideo im Takt meines Songs
+	Folders to search	Ordner, in denen gesucht wird
+	Pictures, Videos, Music (the default folders)	Bilder, Videos, Musik (die Standardordner)
+	Remove folder	Ordner entfernen
+	Add folder…	Ordner hinzufügen…
+	That is enough folders. Remove one before adding another.	Das sind genug Ordner. Entferne einen, bevor du einen weiteren hinzufügst.
+	Understand	Verstehen
+	Make film	Film erstellen
+	Type what film you want first.	Schreib zuerst, welchen Film du möchtest.
+	The AI Director can't do this yet in this version of FilmCraft.	Die KI-Regie kann das in dieser FilmCraft-Version noch nicht.
+	Not possible right now: {why}	Gerade nicht möglich: {why}
+	Something went wrong: {e}	Etwas ist schiefgelaufen: {e}
+	The AI Director's answer could not be read.	Die Antwort der KI-Regie konnte nicht gelesen werden.
+	“{date}” is not a date like 2026-07-31.	„{date}“ ist kein Datum wie 2026-07-31.
+	Starting…	Wird gestartet…
+	Making your film…	Dein Film entsteht…
+	Stopping…	Wird abgebrochen…
+	Your film is ready.	Dein Film ist fertig.
+	Stopped. No film was made.	Abgebrochen. Es wurde kein Film erstellt.
+	The film could not be made: {e}	Der Film konnte nicht erstellt werden: {e}
+	The AI Director stopped without making a film.	Die KI-Regie hat aufgehört, ohne einen Film zu erstellen.
+	The film's sequence is no longer in the project.	Die Sequenz des Films ist nicht mehr im Projekt.
+	Other changes came after the film. Use Edit ▸ Undo or the History panel.	Nach dem Film kamen weitere Änderungen. Nutze Bearbeiten ▸ Rückgängig oder das Bedienfeld „Verlauf“.
+	The film was taken back.	Der Film wurde rückgängig gemacht.
+	Length: {time}	Länge: {time}
+	{n} clips	{n} Clips
+	{n} chapters	{n} Kapitel
+	1 clip	1 Clip
+	1 chapter	1 Kapitel
+	Searched in: {folders}	Durchsucht: {folders}
+	Play	Abspielen
+	Explain how	Schritte erklären
+	What I did, and how you can do it by hand:	Was ich gemacht habe und wie du es von Hand machen kannst:
+	No steps were reported.	Es wurden keine Schritte gemeldet.
+	What I understood	Was ich verstanden habe
+	Press Understand to see what I make of your wish.	Drück auf „Verstehen“, um zu sehen, was ich aus deinem Wunsch mache.
+	You changed the wish. Press Understand to update this.	Du hast den Wunsch geändert. Drück auf „Verstehen“, um das hier zu aktualisieren.
+	Nothing specific yet: the settings below are used.	Noch nichts Bestimmtes: Es gelten die Einstellungen unten.
+	Aspect ratio	Seitenverhältnis
+	Wide	Breitbild
+	Upright (Reels, Shorts)	Hochkant (Reels, Shorts)
+	Square	Quadrat
+	Portrait	Hochformat
+	Resolution	Auflösung
+	Frame rate	Bildrate
+	Length	Länge
+	0 = automatic	0 = automatisch
+	Dates	Zeitraum
+	YYYY-MM-DD	JJJJ-MM-TT
+	Mood	Stimmung
+	Upbeat	Fröhlich
+	Calm	Ruhig
+	Epic	Episch
+	Title	Titel
+	Made from the content	Aus dem Inhalt
+	Cancel	Abbrechen
