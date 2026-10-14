@@ -657,10 +657,12 @@ fn build(s: &mut Session, plan: &Plan, title: &str, shots: &[Shot], chs: &[Chapt
     for (ci, _) in &chapter_first {
         let Some(c) = chs.get(*ci) else { continue };
         let Some(shot) = shots.iter().find(|x| x.chapter == *ci) else { continue };
-        // the first chapter's name waits for the film title to go
+        // the first chapter's name waits for the film title to go; a name stays up for at most
+        // three seconds and never into the next chapter
         let at = if shot.start < title_len { title_len } else { shot.start };
-        let len = bar_ticks(3.0);
-        if at + len > film_end || c.title.is_empty() {
+        let chapter_end = shots.iter().filter(|x| x.chapter > *ci).map(|x| x.start).min().unwrap_or(film_end).min(film_end);
+        let len = bar_ticks(3.0).min(chapter_end - at.min(chapter_end));
+        if len < bar_ticks(1.0) || c.title.is_empty() {
             continue;
         }
         if let Some(v) = soft(
