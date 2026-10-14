@@ -209,20 +209,30 @@ pub fn folder_title(folder: &str) -> String {
     words.join(" ")
 }
 
-/// Group media (sorted by time) into chapters: a gap of more than 36 hours starts a new one.
+/// The name a medium gives its chapter: its place, else its folder.
+fn place_key(c: &Candidate) -> String {
+    c.place.clone().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| folder_title(&c.folder))
+}
+
+/// Group media (sorted by time) into chapters. A gap of more than 36 hours starts a new chapter
+/// when the place (or folder) changes too; a gap of more than a week always does. So a trip
+/// with a quiet day in the middle stays one chapter, and two trips to the same town are two.
 fn chapters(media: &[Medium], order: &[usize], language: &str) -> Vec<Chapter> {
     let mut out: Vec<Chapter> = Vec::new();
     let mut last: Option<f64> = None;
+    let mut key = String::new();
     for &i in order {
         let Some(m) = media.get(i) else { continue };
         let t = when(&m.candidate);
+        let k = place_key(&m.candidate);
         let gap = match (last, t) {
-            (Some(a), Some(b)) => b - a > 36.0 * 3600.0,
+            (Some(a), Some(b)) => (b - a > 36.0 * 3600.0 && k != key) || b - a > 7.0 * 86_400.0,
             (None, _) => true,
             _ => false,
         };
         if gap || out.is_empty() {
             out.push(Chapter { title: String::new(), subtitle: String::new(), members: Vec::new() });
+            key = k;
         }
         if let Some(c) = out.last_mut() {
             c.members.push(i);
@@ -236,7 +246,7 @@ fn chapters(media: &[Medium], order: &[usize], language: &str) -> Vec<Chapter> {
         let mut names: Vec<(String, usize)> = Vec::new();
         for &i in &c.members {
             let Some(m) = media.get(i) else { continue };
-            let name = m.candidate.place.clone().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| folder_title(&m.candidate.folder));
+            let name = place_key(&m.candidate);
             if name.is_empty() {
                 continue;
             }
