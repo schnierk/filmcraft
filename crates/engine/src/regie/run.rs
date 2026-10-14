@@ -70,10 +70,11 @@ pub(crate) fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let (prog, res, out) = (job.progress.clone(), job.result.clone(), slot.clone());
     let media = s.media.clone();
     let services = s.services.clone();
+    let backgrounds = crate::autosave::default_data_dir().map(|d| d.join("regie-backgrounds"));
     let run = move || {
         let t0 = web_time::Instant::now();
         let status = |text: String| *lock(&prog.status) = text;
-        let r = analyse(&plan, &media, &*services, &prog.cancel, &|done, total, text| {
+        let r = analyse(&plan, &media, &*services, backgrounds.as_deref(), &prog.cancel, &|done, total, text| {
             prog.total.store(total.max(1), Ordering::Relaxed);
             prog.done.store(done.min(total), Ordering::Relaxed);
             status(text);
@@ -128,6 +129,7 @@ fn analyse(
     plan: &Plan,
     pool: &crate::media_pool::MediaPool,
     services: &dyn crate::Services,
+    backgrounds: Option<&std::path::Path>,
     cancel: &AtomicBool,
     progress: &dyn Fn(u64, u64, String),
 ) -> std::result::Result<Analysis, String> {
@@ -161,7 +163,17 @@ fn analyse(
             .map(|a| a.path.clone()),
     };
     let total = videos.len() as u64 + 2;
-    let mut media: Vec<Medium> = photos.into_iter().map(|c| Medium { candidate: c, highlights: None }).collect();
+    // portrait photos in a landscape film (and the other way round) get a small blurred background
+    let frame_ratio = plan.width.max(1) as f64 / plan.height.max(1) as f64;
+    let mut media: Vec<Medium> = photos
+        .into_iter()
+        .map(|c| {
+            let ratio = (c.width.max(1) as f64 / c.height.max(1) as f64) / frame_ratio;
+            let needs = c.width > 0 && c.height > 0 && !(0.7..=1.45).contains(&ratio);
+            let background = if needs { backgrounds.and_then(|dir| blurred_background(pool, services, &c.path, dir)) } else { None };
+            Medium { candidate: c, highlights: None, background, background_item: None }
+        })
+        .collect();
     for (k, c) in videos.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err(stopped(de));
@@ -177,7 +189,7 @@ fn analyse(
             },
         );
         let highlights: Option<Highlights> = pool.open_file(&c.path, services).ok().and_then(|src| best_moments(&src, cancel));
-        media.push(Medium { candidate: c, highlights });
+        media.push(Medium { candidate: c, highlights, background: None, background_item: None });
     }
     let music = match music_path {
         Some(path) => {
@@ -193,6 +205,73 @@ fn analyse(
     };
     progress(total, total, String::new());
     Ok(Analysis { plan: plan.clone(), media, music, scanned, skipped })
+}
+
+/// A small, blurred and darkened copy of the photo at `path`, written as PNG into `dir` (named
+/// after the photo, so a second film reuses it). `None` when the photo cannot be read.
+fn blurred_background(pool: &crate::media_pool::MediaPool, services: &dyn crate::Services, path: &str, dir: &std::path::Path) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    std::fs::metadata(path).ok()?.len().hash(&mut hasher);
+    let out = dir.join(format!("{:016x}.png", hasher.finish()));
+    if out.is_file() {
+        return Some(out.to_string_lossy().into_owned());
+    }
+    let src = pool.open_file(path, services).ok()?;
+    let v = src.info().video.clone()?;
+    let scale = (480.0 / v.width.max(v.height).max(1) as f32).clamp(0.01, 1.0);
+    let frame = src.video_frame(filmcraft_media::FrameRequest { time: filmcraft_time::Tick::ZERO, scale }).ok()?;
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    let mut px = frame.to_rgba8();
+    if w < 2 || h < 2 || px.len() != w.checked_mul(h)?.checked_mul(4)? {
+        return None;
+    }
+    let radius = (w.max(h) / 30).max(2);
+    for _ in 0..3 {
+        box_blur(&mut px, w, h, radius);
+    }
+    for p in px.as_chunks_mut::<4>().0 {
+        for c in p.iter_mut().take(3) {
+            *c = (f32::from(*c) * 0.55) as u8;
+        }
+    }
+    let png = filmcraft_export::encode_png(px, w as u32, h as u32).ok()?;
+    std::fs::create_dir_all(dir).ok()?;
+    std::fs::write(&out, png).ok()?;
+    Some(out.to_string_lossy().into_owned())
+}
+
+/// One horizontal and one vertical box blur of radius `r` over straight RGBA8 pixels (edges
+/// repeat). Three passes approximate a Gaussian.
+fn box_blur(px: &mut [u8], w: usize, h: usize, r: usize) {
+    let mut tmp = vec![0u8; px.len()];
+    box_pass(px, &mut tmp, w, h, r, true);
+    box_pass(&tmp, px, w, h, r, false);
+}
+
+fn box_pass(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize, horizontal: bool) {
+    let (outer, inner) = if horizontal { (h, w) } else { (w, h) };
+    if inner == 0 {
+        return;
+    }
+    let idx = |o: usize, i: usize| if horizontal { (o * w + i) * 4 } else { (i * w + o) * 4 };
+    let span = (2 * r + 1) as u32;
+    let last = inner as isize - 1;
+    let r = r as isize;
+    for o in 0..outer {
+        for ch in 0..4 {
+            let at = |i: isize| -> u32 { src.get(idx(o, i.clamp(0, last) as usize) + ch).copied().map(u32::from).unwrap_or(0) };
+            let mut acc: u32 = (-r..=r).map(at).sum();
+            for i in 0..inner {
+                if let Some(d) = dst.get_mut(idx(o, i) + ch) {
+                    *d = (acc / span) as u8;
+                }
+                let i = i as isize;
+                acc = (acc + at(i + r + 1)).saturating_sub(at(i - r));
+            }
+        }
+    }
 }
 
 /// The best moments of a video (as `media.highlights`, with its default settings).
@@ -278,6 +357,7 @@ pub fn poll(s: &mut Session) {
 fn finish(s: &mut Session, a: Analysis) -> Result<Value> {
     let de = a.plan.language == "de";
     let mut paths: Vec<String> = a.media.iter().map(|m| m.candidate.path.clone()).collect();
+    paths.extend(a.media.iter().filter_map(|m| m.background.clone()));
     if let Some((m, _)) = &a.music {
         paths.push(m.clone());
     }
@@ -299,6 +379,7 @@ fn finish(s: &mut Session, a: Analysis) -> Result<Value> {
         let mut media = a.media.clone();
         for m in &mut media {
             m.candidate.item = item_for_path(s, &m.candidate.path).map(|i| i.0);
+            m.background_item = m.background.as_deref().and_then(|b| item_for_path(s, b)).map(|i| i.0);
         }
         media.retain(|m| m.candidate.item.is_some());
         let music = a.music.as_ref().and_then(|(path, beats)| item_for_path(s, path).map(|i| Music { item: i.0, beats: beats.clone() }));

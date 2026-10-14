@@ -91,6 +91,10 @@ pub struct Medium {
     #[serde(flatten)]
     pub candidate: Candidate,
     pub highlights: Option<Highlights>,
+    /// A small, already blurred and darkened picture to put behind a portrait photo (instead of
+    /// blurring the full-size photo on every frame), and its project item.
+    pub background: Option<String>,
+    pub background_item: Option<u64>,
 }
 
 /// The music to cut to.
@@ -126,6 +130,8 @@ struct Shot {
     source_in: f64,
     /// The medium's shape differs from the sequence's: fit it over a blurred copy.
     letterboxed: bool,
+    /// The ready-made blurred background for a letterboxed photo.
+    background: Option<ItemId>,
     chapter: usize,
     start: Tick,
     duration: Tick,
@@ -411,7 +417,8 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
                 if stop <= start {
                     continue;
                 }
-                shots.push(Shot { item: ItemId(item), photo, source_in, letterboxed, chapter: ci, start, duration: stop - start });
+                let background = if letterboxed { m.background_item.map(ItemId) } else { None };
+                shots.push(Shot { item: ItemId(item), photo, source_in, letterboxed, background, chapter: ci, start, duration: stop - start });
                 t = (stop.0 as f64) / filmcraft_time::TICKS_PER_SECOND as f64;
                 beat_index = beats.iter().position(|b| *b >= t - 0.02).unwrap_or(beats.len());
                 if t >= length - 0.5 {
@@ -633,7 +640,17 @@ fn build(s: &mut Session, plan: &Plan, title: &str, shots: &[Shot], chs: &[Chapt
         // fill the frame, or fit it over a blurred, darker copy of itself
         let fitted = soft(s, if shot.letterboxed { "clip.fitToFrame" } else { "clip.fillFrame" }, json!({"clips": [clip]}));
         let base = fitted.as_ref().and_then(|v| v.get("clips")?.get(0)?.get("scale")?.as_f64()).unwrap_or(100.0);
-        if shot.letterboxed {
+        if let (true, Some(ready)) = (shot.letterboxed, shot.background) {
+            // a photo's background was blurred once, small: it only needs to fill the frame
+            let bg = json!({"item": ready.0, "track": "V1", "time": shot.start.0, "duration": shot.duration.0, "audio": false, "insert": false});
+            if let Some(bg_clip) = soft(s, "timeline.place", bg).and_then(|v| clips_of(&v).first().copied()) {
+                soft(s, "clip.fillFrame", json!({"clips": [bg_clip]}));
+                if first_bg.is_none() && k == 0 {
+                    first_bg = Some(bg_clip);
+                }
+                last_bg = Some(bg_clip);
+            }
+        } else if shot.letterboxed {
             let mut bg = place.clone();
             bg["track"] = json!("V1");
             bg["audio"] = json!(false);
@@ -762,6 +779,8 @@ pub fn medium(item: ItemId, kind: &str, width: u32, height: u32, created: Option
     Medium {
         candidate: Candidate { kind: kind.into(), width, height, created: created.map(str::to_string), item: Some(item.0), ..Default::default() },
         highlights: None,
+        background: None,
+        background_item: None,
     }
 }
 
