@@ -34,6 +34,7 @@ filmcraft-audio-dsp = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-mxf = { workspace = true }
 filmcraft-format = { workspace = true }
+filmcraft-isobmff = { workspace = true }
 filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
@@ -47,5 +48,4 @@ web-time = "1"
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
-filmcraft-isobmff = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }
