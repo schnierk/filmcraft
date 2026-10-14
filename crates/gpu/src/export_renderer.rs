@@ -131,7 +131,8 @@ fn open_device(backends: wgpu::Backends) -> Result<SharedDevice, String> {
     let supported = adapter.limits();
     let required_limits = wgpu::Limits { max_buffer_size: supported.max_buffer_size, ..wgpu::Limits::default().using_resolution(supported) };
     let descriptor = wgpu::DeviceDescriptor { required_limits, ..Default::default() };
-    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("the GPU adapter {name} could not open a device: {e}"))?;
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("the GPU adapter {name} could not open a device: {e}"))?;
     Ok(SharedDevice { instance, device, queue, adapter: name })
 }
 
