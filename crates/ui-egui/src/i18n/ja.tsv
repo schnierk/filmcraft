@@ -3609,3 +3609,63 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+
+# AI Director panel (Window ▸ AI Director).
+	AI Director	AI ディレクター
+	Say what film you want. I'll build it from your own media — every cut stays editable.	作りたい映像を教えてください。あなた自身のメディアから作成します。すべてのカットは後から編集できます。
+	Describe your film: what, how long, which format, which mood	映像の内容を説明してください: 何を、どのくらいの長さで、どの形式で、どんな雰囲気で
+	Holiday recap 16:9 4K, about 3 minutes	休暇の振り返り 16:9 4K、約 3 分
+	Instagram reel 9:16, 30 seconds, fast	Instagram リール 9:16、30 秒、テンポよく
+	Birthday slideshow with music	音楽付きの誕生日スライドショー
+	Music video cut to my song	自分の曲に合わせて編集したミュージックビデオ
+	Folders to search	検索するフォルダー
+	Pictures, Videos, Music (the default folders)	ピクチャ、ビデオ、ミュージック (既定のフォルダー)
+	Remove folder	フォルダーを削除
+	Add folder…	フォルダーを追加…
+	That is enough folders. Remove one before adding another.	これ以上フォルダーを追加できません。別のフォルダーを追加する前に 1 つ削除してください。
+	Understand	解釈
+	Make film	映像を作成
+	Type what film you want first.	まず、作りたい映像を入力してください。
+	The AI Director can't do this yet in this version of FilmCraft.	このバージョンの FilmCraft では、AI ディレクターはまだこの操作を行えません。
+	Not possible right now: {why}	現在は実行できません: {why}
+	Something went wrong: {e}	問題が発生しました: {e}
+	The AI Director's answer could not be read.	AI ディレクターの応答を読み取れませんでした。
+	“{date}” is not a date like 2026-07-31.	「{date}」は 2026-07-31 のような日付ではありません。
+	Starting…	開始しています…
+	Making your film…	映像を作成しています…
+	Stopping…	停止しています…
+	Your film is ready.	映像が完成しました。
+	Stopped. No film was made.	中止しました。映像は作成されていません。
+	The film could not be made: {e}	映像を作成できませんでした: {e}
+	The AI Director stopped without making a film.	AI ディレクターは映像を作成せずに停止しました。
+	The film's sequence is no longer in the project.	映像のシーケンスはプロジェクトにもうありません。
+	Other changes came after the film. Use Edit ▸ Undo or the History panel.	映像の後に別の変更があります。編集 ▸ 取り消し、または履歴パネルを使用してください。
+	The film was taken back.	映像を取り消しました。
+	Length: {time}	長さ: {time}
+	{n} clips	{n} 個のクリップ
+	{n} chapters	{n} 個のチャプター
+	1 clip	1 個のクリップ
+	1 chapter	1 個のチャプター
+	Searched in: {folders}	検索したフォルダー: {folders}
+	Play	再生
+	Explain how	手順を説明
+	What I did, and how you can do it by hand:	行った処理と、手作業で行う方法:
+	No steps were reported.	手順は報告されていません。
+	What I understood	解釈した内容
+	Press Understand to see what I make of your wish.	「解釈」を押すと、希望の内容をどう解釈したかが表示されます。
+	You changed the wish. Press Understand to update this.	希望の内容が変更されました。「解釈」を押して更新してください。
+	Nothing specific yet: the settings below are used.	特に指定はありません。下の設定が使われます。
+	Aspect ratio	アスペクト比
+	Wide	横長
+	Upright (Reels, Shorts)	縦長 (Reels, Shorts)
+	Portrait	縦向き
+	Resolution	解像度
+	Frame rate	フレームレート
+	0 = automatic	0 = 自動
+	Dates	日付
+	YYYY-MM-DD	YYYY-MM-DD
+	Mood	雰囲気
+	Upbeat	明るい
+	Calm	穏やか
+	Epic	壮大
+	Made from the content	内容から自動で作成

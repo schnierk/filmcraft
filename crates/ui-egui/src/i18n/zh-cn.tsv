@@ -3585,3 +3585,63 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+
+# AI Director panel (Window ▸ AI Director).
+	AI Director	AI 导演
+	Say what film you want. I'll build it from your own media — every cut stays editable.	说出你想要的影片。我会用你自己的媒体来制作，每个剪辑点都可以继续编辑。
+	Describe your film: what, how long, which format, which mood	描述你的影片：内容、时长、画幅、氛围
+	Holiday recap 16:9 4K, about 3 minutes	假期回顾 16:9 4K，约 3 分钟
+	Instagram reel 9:16, 30 seconds, fast	Instagram 短视频 9:16，30 秒，快节奏
+	Birthday slideshow with music	带音乐的生日幻灯片
+	Music video cut to my song	按我的歌曲剪辑的音乐视频
+	Folders to search	要搜索的文件夹
+	Pictures, Videos, Music (the default folders)	图片、视频、音乐（默认文件夹）
+	Remove folder	移除文件夹
+	Add folder…	添加文件夹…
+	That is enough folders. Remove one before adding another.	文件夹已经够多了。请先移除一个再添加。
+	Understand	理解
+	Make film	生成影片
+	Type what film you want first.	请先输入你想要的影片。
+	The AI Director can't do this yet in this version of FilmCraft.	此版本的 FilmCraft 中，AI 导演暂时还不能执行此操作。
+	Not possible right now: {why}	当前无法执行：{why}
+	Something went wrong: {e}	出现问题：{e}
+	The AI Director's answer could not be read.	无法读取 AI 导演的回复。
+	“{date}” is not a date like 2026-07-31.	“{date}”不是 2026-07-31 这样的日期。
+	Starting…	正在开始…
+	Making your film…	正在生成你的影片…
+	Stopping…	正在停止…
+	Your film is ready.	你的影片已完成。
+	Stopped. No film was made.	已停止。未生成影片。
+	The film could not be made: {e}	无法生成影片：{e}
+	The AI Director stopped without making a film.	AI 导演已停止，未生成影片。
+	The film's sequence is no longer in the project.	影片的序列已不在项目中。
+	Other changes came after the film. Use Edit ▸ Undo or the History panel.	影片之后还有其他更改。请使用“编辑 ▸ 撤销”或“历史记录”面板。
+	The film was taken back.	已撤销该影片。
+	Length: {time}	时长：{time}
+	{n} clips	{n} 个剪辑
+	{n} chapters	{n} 个章节
+	1 clip	1 个剪辑
+	1 chapter	1 个章节
+	Searched in: {folders}	已搜索：{folders}
+	Play	播放
+	Explain how	说明做法
+	What I did, and how you can do it by hand:	我做了什么，以及你如何手动完成：
+	No steps were reported.	未报告任何步骤。
+	What I understood	我的理解
+	Press Understand to see what I make of your wish.	点击“理解”，查看我如何理解你的需求。
+	You changed the wish. Press Understand to update this.	你修改了需求。点击“理解”以更新。
+	Nothing specific yet: the settings below are used.	暂无具体要求：将使用下方的设置。
+	Aspect ratio	宽高比
+	Wide	宽屏
+	Upright (Reels, Shorts)	竖屏（Reels、Shorts）
+	Portrait	纵向
+	Resolution	分辨率
+	Frame rate	帧速率
+	0 = automatic	0 = 自动
+	Dates	日期
+	YYYY-MM-DD	YYYY-MM-DD
+	Mood	氛围
+	Upbeat	欢快
+	Calm	平静
+	Epic	史诗
+	Made from the content	根据内容生成

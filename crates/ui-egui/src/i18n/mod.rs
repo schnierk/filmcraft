@@ -1104,7 +1104,9 @@ mod tests {
     }
 
     /// German covers at least the core menus (`core_menu_labels`, the top-level menus and the native
-    /// macOS app menu); every entry must still be a menu label.
+    /// macOS app menu) and the whole AI Director panel (`german_translates_the_ai_director_panel`);
+    /// every entry must still be a menu label or have a Spanish counterpart, so a renamed or removed
+    /// source can't leave a dead German entry.
     #[test]
     fn german_entries_cover_the_original_menu_catalog() {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
@@ -1112,7 +1114,7 @@ mod tests {
         let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
         let (entries, _) = catalog::parse_entries(include_str!("de.tsv"));
         for (_, en, _) in entries {
-            assert!(known(&en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()), "not a menu label: {en}");
+            assert!(known(&en) || crate::menus::NATIVE_APP_MENU.contains(&en.as_str()) || Language::Es.has(&en), "not a menu label or interface string: {en}");
         }
         for en in core_menu_labels() {
             assert!(Language::De.has(&en), "missing German menu label: {en}");
@@ -1123,6 +1125,20 @@ mod tests {
         }
         assert_eq!(Language::De.tr("Settings"), "Voreinstellungen");
         assert_eq!(Language::De.tr("Quit FilmCraft"), "FilmCraft beenden");
+    }
+
+    /// The AI Director panel (KI-Regie) is German throughout: its menu entry and every `tl!` /
+    /// `tlf!` literal of `panels/regie.rs`.
+    #[test]
+    fn german_translates_the_ai_director_panel() {
+        let src = include_str!("../panels/regie.rs").replace("\r\n", "\n");
+        let cut = src.find("#[cfg(test)]\nmod tests").unwrap_or(src.len());
+        let literals = tl_literals(&src[..cut]);
+        assert!(literals.len() > 40, "{} literals", literals.len());
+        let missing: Vec<&String> = literals.iter().filter(|l| translatable(l) && !Language::De.has(l)).collect();
+        assert!(missing.is_empty(), "untranslated German strings of the AI Director panel: {missing:#?}");
+        assert_eq!(Language::De.tr(crate::dock::PanelKind::Regie.title()), "KI-Regie");
+        assert_eq!(Language::De.tr("Make film"), "Film erstellen");
     }
 
     /// French covers the whole interface (the Spanish catalog's entries and the native macOS

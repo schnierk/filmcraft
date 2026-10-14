@@ -122,6 +122,8 @@ pub enum Icon {
     Moon,
     /// Colour parameters: pick a colour from the Program monitor (a pipette).
     Eyedropper,
+    /// The AI Director panel (KI-Regie): a clapperboard with a small spark.
+    Director,
 }
 
 pub struct Pen16<'a> {
@@ -770,6 +772,17 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(9.5, 7.5), (3.5, 12.5)]);
             pen.line(&[(3.5, 12.5), (2.5, 13.5)]);
         }
+        Director => {
+            // our own drawing: a clapperboard with its striped clapstick raised (hinged at the
+            // board's top left) and a small four-pointed spark, two thin diamonds, at the top right
+            pen.rect(2.0, 7.5, 13.0, 14.0);
+            pen.line(&[(2.0, 10.0), (13.0, 10.0)]);
+            pen.closed(&[(2.0, 7.0), (10.3, 3.6), (9.7, 2.0), (1.3, 5.3)]);
+            pen.line(&[(4.8, 5.9), (4.1, 4.2)]);
+            pen.line(&[(7.6, 4.8), (6.9, 3.1)]);
+            pen.fill(&[(13.9, 1.3), (14.45, 3.2), (13.9, 5.1), (13.35, 3.2)]);
+            pen.fill(&[(12.0, 3.2), (13.9, 2.65), (15.8, 3.2), (13.9, 3.75)]);
+        }
     }
 }
 
@@ -903,6 +916,7 @@ mod tests {
         Network,
         Clock,
         Eyedropper,
+        Director,
     ];
 
     /// Paint `icon` at `ppp` device pixels per point into a rect of `size` points whose corner is
