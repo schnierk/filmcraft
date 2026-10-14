@@ -19,6 +19,9 @@ pub mod analysis;
 pub mod assemble;
 pub mod library;
 pub mod plan;
+pub mod run;
+#[cfg(test)]
+mod tests;
 pub mod types;
 
 pub use types::{Beats, Candidate, Highlights, Plan, Section, Segment};
