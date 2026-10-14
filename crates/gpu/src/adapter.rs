@@ -154,6 +154,56 @@ pub fn pick(adapters: &[Adapter], surface: Option<&Surface<'_>>, power: PowerPre
     Ok(adapter.clone())
 }
 
+/// The environment variable that names the adapter for off-screen work (export rendering): a
+/// part of the adapter's name, driver or backend, case-insensitive, such as `nvidia`, `radv`,
+/// `vulkan` or `llvmpipe`.
+pub const OFFSCREEN_ADAPTER_ENV: &str = "FILMCRAFT_GPU_ADAPTER";
+
+/// Whether `candidate` answers to `wanted` (see [`OFFSCREEN_ADAPTER_ENV`]).
+fn answers_to(candidate: &Candidate, wanted: &str) -> bool {
+    let wanted = wanted.trim().to_lowercase();
+    if wanted.is_empty() {
+        return false;
+    }
+    let backend = format!("{:?}", candidate.backend);
+    [candidate.name.as_str(), candidate.driver.as_str(), candidate.driver_info.as_str(), backend.as_str()]
+        .iter()
+        .any(|field| field.to_lowercase().contains(&wanted))
+}
+
+/// The index of the adapter for off-screen work, which draws to no window: the first usable
+/// adapter answering to `wanted` when one does, else [`choose`] with the high-performance
+/// preference among the hardware adapters. A machine with a discrete and an integrated GPU so
+/// renders on the discrete one, whichever its driver lists first. A software rasteriser
+/// (llvmpipe, lavapipe, WARP) is used only when `wanted` names it: FilmCraft's own CPU renderer
+/// is faster than drawing through one. `None` without a usable hardware adapter.
+pub fn choose_offscreen(candidates: &[Candidate], wanted: Option<&str>) -> Option<usize> {
+    if let Some(index) = wanted.and_then(|w| candidates.iter().position(|c| c.usable && answers_to(c, w))) {
+        return Some(index);
+    }
+    let hardware: Vec<Candidate> = candidates.iter().map(|c| Candidate { usable: c.usable && c.device_type != DeviceType::Cpu, ..c.clone() }).collect();
+    choose(&hardware, PowerPreference::HighPerformance)
+}
+
+/// [`choose_offscreen`] over enumerated adapters, with [`OFFSCREEN_ADAPTER_ENV`] from the
+/// environment. The adapters and the choice go to the log.
+pub fn pick_offscreen(adapters: &[Adapter]) -> Result<Adapter, String> {
+    let candidates: Vec<Candidate> = adapters.iter().map(|a| Candidate::of(a, None)).collect();
+    for candidate in &candidates {
+        log::info!("off-screen graphics adapter available: {candidate}");
+    }
+    let wanted = std::env::var(OFFSCREEN_ADAPTER_ENV).ok().filter(|w| !w.trim().is_empty());
+    let index = choose_offscreen(&candidates, wanted.as_deref()).ok_or_else(|| format!("no usable hardware graphics adapter among {}", candidates.len()))?;
+    let (Some(chosen), Some(adapter)) = (candidates.get(index), adapters.get(index)) else {
+        return Err(format!("graphics adapter {index} of {} is missing", adapters.len()));
+    };
+    if let Some(wanted) = wanted.as_deref().filter(|w| !answers_to(chosen, w)) {
+        log::warn!("{OFFSCREEN_ADAPTER_ENV}={wanted} names no usable adapter; using the default choice");
+    }
+    log::info!("off-screen graphics adapter chosen: {chosen}");
+    Ok(adapter.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +411,51 @@ mod tests {
                 _ => assert_eq!(picked, wgpu_own, "{power:?}"),
             }
         }
+    }
+
+    const NVIDIA: u32 = 0x10de;
+    const RTX_5090: u32 = 0x2b85;
+
+    /// A Linux desktop with a discrete NVIDIA card and the CPU's integrated Radeon, the iGPU
+    /// listed first, plus Mesa's software rasteriser.
+    fn desktop_with_igpu() -> Vec<Candidate> {
+        vec![
+            gpu("AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)", Vulkan, IntegratedGpu, AMD, RADEON_IGPU, "0000:7c:00.0", "radv", "Mesa 25.2.8", 50),
+            gpu("NVIDIA GeForce RTX 5090", Vulkan, DiscreteGpu, NVIDIA, RTX_5090, "0000:01:00.0", "NVIDIA", "595.99.02", 70),
+            gpu("llvmpipe (LLVM 20.1.2, 256 bits)", Vulkan, Cpu, 0x10005, 0, "", "llvmpipe", "Mesa 25.2.8 (LLVM 20.1.2)", 40),
+        ]
+    }
+
+    #[test]
+    fn offscreen_work_goes_to_the_discrete_gpu_whichever_is_listed_first() {
+        let adapters = desktop_with_igpu();
+        assert_eq!(wgpu_choice(&adapters, PowerPreference::None), Some(0), "without a preference wgpu takes the iGPU listed first");
+        assert_eq!(choose_offscreen(&adapters, None), Some(1));
+        let mut reversed = adapters.clone();
+        reversed.reverse();
+        assert_eq!(choose_offscreen(&reversed, None), Some(1));
+    }
+
+    #[test]
+    fn offscreen_work_draws_through_a_software_rasteriser_only_when_asked() {
+        let software: Vec<Candidate> = desktop_with_igpu().into_iter().filter(|c| c.device_type == Cpu).collect();
+        assert_eq!(choose_offscreen(&software, None), None, "FilmCraft's CPU renderer instead");
+        assert_eq!(choose_offscreen(&software, Some("llvmpipe")), Some(0));
+    }
+
+    #[test]
+    fn the_environment_names_the_offscreen_adapter() {
+        let adapters = desktop_with_igpu();
+        assert_eq!(choose_offscreen(&adapters, Some("radv")), Some(0), "the iGPU, e.g. while other jobs fill the discrete GPU");
+        assert_eq!(choose_offscreen(&adapters, Some("NVIDIA")), Some(1));
+        assert_eq!(choose_offscreen(&adapters, Some("  rtx 5090 ")), Some(1), "case and surrounding spaces do not matter");
+        assert_eq!(choose_offscreen(&adapters, Some("vulkan")), Some(0), "the first adapter of that backend");
+        assert_eq!(choose_offscreen(&adapters, Some("no such gpu")), Some(1), "an unknown name keeps the default choice");
+        assert_eq!(choose_offscreen(&adapters, Some("")), Some(1));
+        let mut unusable = adapters.clone();
+        if let Some(igpu) = unusable.get_mut(0) {
+            igpu.usable = false;
+        }
+        assert_eq!(choose_offscreen(&unusable, Some("radv")), Some(1), "an unusable adapter is not named into use");
     }
 }

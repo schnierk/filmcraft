@@ -112,8 +112,25 @@ impl ExportRenderer {
                     return None;
                 }
                 let instance = wgpu::Instance::default();
-                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                // Not `request_adapter` without a preference, which takes the first adapter listed:
+                // on a desktop with a discrete GPU and the CPU's integrated one that can be either,
+                // and a software rasteriser is slower than the CPU renderer
+                // (`adapter::choose_offscreen`; `FILMCRAFT_GPU_ADAPTER` names one).
+                let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+                let adapter = match crate::adapter::pick_offscreen(&adapters) {
+                    Ok(adapter) => adapter,
+                    Err(why) => {
+                        log::info!("exports render on the CPU: {why}");
+                        return None;
+                    }
+                };
+                // The adapter's own texture size and buffer limits instead of wgpu's portable
+                // defaults (8192 px, 256 MiB), so larger frames stay on the GPU and their
+                // read-back buffer fits.
+                let supported = adapter.limits();
+                let required_limits = wgpu::Limits { max_buffer_size: supported.max_buffer_size, ..wgpu::Limits::default().using_resolution(supported) };
+                let descriptor = wgpu::DeviceDescriptor { required_limits, ..Default::default() };
+                let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
