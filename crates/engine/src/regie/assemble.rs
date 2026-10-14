@@ -215,9 +215,9 @@ fn place_key(c: &Candidate) -> String {
     c.place.clone().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| folder_title(&c.folder))
 }
 
-/// Group media (sorted by time) into chapters. A gap of more than 36 hours starts a new chapter
-/// when the place (or folder) changes too; a gap of more than a week always does. So a trip
-/// with a quiet day in the middle stays one chapter, and two trips to the same town are two.
+/// Group media (sorted by time) into chapters. A change of place (or folder) after more than six
+/// hours starts a new chapter, and so does a gap of more than a week. So a trip with a quiet day
+/// in the middle stays one chapter, and two trips to the same town are two.
 fn chapters(media: &[Medium], order: &[usize], language: &str) -> Vec<Chapter> {
     let mut out: Vec<Chapter> = Vec::new();
     let mut last: Option<f64> = None;
@@ -227,7 +227,7 @@ fn chapters(media: &[Medium], order: &[usize], language: &str) -> Vec<Chapter> {
         let t = when(&m.candidate);
         let k = place_key(&m.candidate);
         let gap = match (last, t) {
-            (Some(a), Some(b)) => (b - a > 36.0 * 3600.0 && k != key) || b - a > 7.0 * 86_400.0,
+            (Some(a), Some(b)) => (b - a > 6.0 * 3600.0 && k != key) || b - a > 7.0 * 86_400.0,
             (None, _) => true,
             _ => false,
         };
@@ -350,87 +350,90 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
     let wsum: f64 = weights.iter().sum::<f64>().max(1e-9);
     let mut wants: Vec<usize> =
         chs.iter().zip(&weights).map(|(c, w)| ((total_shots as f64 * w / wsum).round() as usize).clamp(2.min(c.members.len()), c.members.len())).collect();
-    // a photo lasts a bar, a video shot about three beats: while that is shorter than the film
-    // should be, chapters with unused media get more shots (the biggest spare first)
-    let estimate = |i: &usize| if media.get(*i).is_some_and(|m| m.candidate.kind == "photo") { bar } else { beat * 3.0 };
-    for _ in 0..12 {
-        let total: f64 = chs.iter().zip(&wants).map(|(c, w)| pick(media, &c.members, *w).iter().map(estimate).sum::<f64>()).sum();
-        let deficit = length - total;
-        if deficit < bar {
-            break;
+    // lay the shots on the grid; while the film comes out shorter than it should be, chapters
+    // with unused media get more shots (by their share of the unused media) and it is laid again
+    let layout = |picks: &[Vec<usize>]| -> Vec<Shot> {
+        let mut shots: Vec<Shot> = Vec::new();
+        let mut beat_index = 0usize;
+        let mut t = 0.0f64;
+        'chapters: for (ci, members) in picks.iter().enumerate() {
+            for &i in members {
+                let Some(m) = media.get(i) else { continue };
+                let Some(item) = m.candidate.item else { continue };
+                let photo = m.candidate.kind == "photo";
+                let is_lively = lively.get(beat_index).copied().unwrap_or(false);
+                let n_beats = if photo || plan.mood == "calm" || !is_lively { 4 } else { 2 };
+                let mut next = beat_index + n_beats;
+                // never shorter than 0.8 s
+                while beats.get(next).is_some_and(|b| *b - t < 0.8) {
+                    next += 1;
+                }
+                let end = beats.get(next).copied().unwrap_or(length).min(length);
+                if end - t < 0.5 {
+                    break 'chapters;
+                }
+                let dur = end - t;
+                let (source_in, media_seconds) = if photo {
+                    (0.0, None)
+                } else {
+                    let secs = m.candidate.seconds.or(m.highlights.as_ref().map(|h| h.seconds)).filter(|v| v.is_finite() && *v > 0.0);
+                    let best = m.highlights.as_ref().and_then(|h| h.segments.iter().max_by(|a, b| a.score.total_cmp(&b.score)));
+                    let centre = match (best, secs) {
+                        (Some(b), _) => (b.start + b.end) / 2.0,
+                        (None, Some(sec)) => sec / 2.0,
+                        (None, None) => dur / 2.0,
+                    };
+                    let max_in = secs.map(|v| (v - dur).max(0.0)).unwrap_or(f64::MAX);
+                    ((centre - dur / 2.0).clamp(0.0, max_in), secs)
+                };
+                if media_seconds.is_some_and(|v| v < 0.3) {
+                    continue;
+                }
+                // portrait (or square, or very wide) media sit on a blurred copy; 4:3 and 3:2
+                // pictures fill the frame
+                let (mw, mh) = (m.candidate.width.max(1) as f64, m.candidate.height.max(1) as f64);
+                let ratio = (mw / mh) / (plan.width as f64 / plan.height as f64);
+                let letterboxed = m.candidate.width > 0 && m.candidate.height > 0 && !(0.7..=1.45).contains(&ratio);
+                let start = frame_tick(t, rate);
+                let stop = frame_tick(end, rate);
+                // a video shorter than its slot ends early: the slot shrinks to the video
+                let stop = match media_seconds {
+                    Some(v) if v - source_in < dur => frame_tick(t + (v - source_in).max(0.3), rate),
+                    _ => stop,
+                };
+                if stop <= start {
+                    continue;
+                }
+                shots.push(Shot { item: ItemId(item), photo, source_in, letterboxed, chapter: ci, start, duration: stop - start });
+                t = (stop.0 as f64) / filmcraft_time::TICKS_PER_SECOND as f64;
+                beat_index = beats.iter().position(|b| *b >= t - 0.02).unwrap_or(beats.len());
+                if t >= length - 0.5 {
+                    break 'chapters;
+                }
+            }
         }
+        shots
+    };
+    let end_of = |shots: &[Shot]| shots.iter().map(|x| (x.start + x.duration).seconds()).fold(0.0, f64::max);
+    let mut picks: Vec<Vec<usize>> = chs.iter().zip(&wants).map(|(c, w)| pick(media, &c.members, *w)).collect();
+    let mut shots = layout(&picks);
+    for _ in 0..10 {
+        let deficit = length - end_of(&shots);
         let spare: Vec<usize> = chs.iter().zip(&wants).map(|(c, w)| c.members.len().saturating_sub(*w)).collect();
         let spare_sum: usize = spare.iter().sum();
-        if spare_sum == 0 {
+        if deficit < bar || spare_sum == 0 {
             break;
         }
-        let extra = ((deficit / (beat * 3.0)).ceil() as usize).max(1);
+        let per_shot = (end_of(&shots) / shots.len().max(1) as f64).max(0.5);
+        let extra = ((deficit / per_shot).ceil() as usize).max(1);
         for (k, sp) in spare.iter().enumerate() {
             let share = (extra * sp).div_ceil(spare_sum).min(*sp);
             if let Some(w) = wants.get_mut(k) {
                 *w += share;
             }
         }
-    }
-    let picks: Vec<Vec<usize>> = chs.iter().zip(&wants).map(|(c, w)| pick(media, &c.members, *w)).collect();
-
-    // lay the shots on the grid
-    let mut shots: Vec<Shot> = Vec::new();
-    let mut beat_index = 0usize;
-    let mut t = 0.0f64;
-    'chapters: for (ci, members) in picks.iter().enumerate() {
-        for &i in members {
-            let Some(m) = media.get(i) else { continue };
-            let Some(item) = m.candidate.item else { continue };
-            let photo = m.candidate.kind == "photo";
-            let is_lively = lively.get(beat_index).copied().unwrap_or(false);
-            let n_beats = if photo || plan.mood == "calm" || !is_lively { 4 } else { 2 };
-            let mut next = beat_index + n_beats;
-            // never shorter than 0.8 s
-            while beats.get(next).is_some_and(|b| *b - t < 0.8) {
-                next += 1;
-            }
-            let end = beats.get(next).copied().unwrap_or(length).min(length);
-            if end - t < 0.5 {
-                break 'chapters;
-            }
-            let dur = end - t;
-            let (source_in, media_seconds) = if photo {
-                (0.0, None)
-            } else {
-                let secs = m.candidate.seconds.or(m.highlights.as_ref().map(|h| h.seconds)).filter(|v| v.is_finite() && *v > 0.0);
-                let best = m.highlights.as_ref().and_then(|h| h.segments.iter().max_by(|a, b| a.score.total_cmp(&b.score)));
-                let centre = match (best, secs) {
-                    (Some(b), _) => (b.start + b.end) / 2.0,
-                    (None, Some(sec)) => sec / 2.0,
-                    (None, None) => dur / 2.0,
-                };
-                let max_in = secs.map(|v| (v - dur).max(0.0)).unwrap_or(f64::MAX);
-                ((centre - dur / 2.0).clamp(0.0, max_in), secs)
-            };
-            if media_seconds.is_some_and(|v| v < 0.3) {
-                continue;
-            }
-            let (mw, mh) = (m.candidate.width.max(1) as f64, m.candidate.height.max(1) as f64);
-            let ratio = (mw / mh) / (plan.width as f64 / plan.height as f64);
-            let letterboxed = m.candidate.width > 0 && m.candidate.height > 0 && !(0.85..=1.18).contains(&ratio);
-            let start = frame_tick(t, rate);
-            let stop = frame_tick(end, rate);
-            // a video shorter than its slot ends early: the slot shrinks to the video
-            let stop = match media_seconds {
-                Some(v) if v - source_in < dur => frame_tick(t + (v - source_in).max(0.3), rate),
-                _ => stop,
-            };
-            if stop <= start {
-                continue;
-            }
-            shots.push(Shot { item: ItemId(item), photo, source_in, letterboxed, chapter: ci, start, duration: stop - start });
-            t = (stop.0 as f64) / filmcraft_time::TICKS_PER_SECOND as f64;
-            beat_index = beats.iter().position(|b| *b >= t - 0.02).unwrap_or(beats.len());
-            if t >= length - 0.5 {
-                break 'chapters;
-            }
-        }
+        picks = chs.iter().zip(&wants).map(|(c, w)| pick(media, &c.members, *w)).collect();
+        shots = layout(&picks);
     }
     if shots.is_empty() {
         return Err(EngineError::Other(if de { "Aus den Medien ließ sich kein Film bauen.".into() } else { "Could not build a film from the media.".into() }));
