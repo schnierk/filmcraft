@@ -191,6 +191,11 @@ pub struct Mp4File {
     pub timescale: u32,
     /// Movie duration in the movie timescale (`mvhd`; for fragmented files, the longest track).
     pub duration: u64,
+    /// When the movie was created and last modified (`mvhd`): seconds since 1904-01-01 00:00 UTC
+    /// (ISO/IEC 14496-12 §8.2.2), 0 when the writer left them unset. Phones often put the time
+    /// of an export here; the capture time is in [`metadata`](Self::metadata) when they keep it.
+    pub creation_time: u64,
+    pub modification_time: u64,
     pub tracks: Vec<Track>,
     pub metadata: Metadata,
     /// File uses movie fragments (`mvex` present).
@@ -232,11 +237,25 @@ fn read_range<S: ByteSource + ?Sized>(src: &S, offset: u64, size: u64) -> Result
 
 /// Parse an MP4/MOV file. Only box headers, `ftyp`, `moov` and `moof` boxes are read.
 pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
+    open_with(src, true)
+}
+
+/// Parse only what describes the movie: brands, `mvhd`, each track's header, edit list and
+/// sample descriptions, and the metadata. Sample tables (`stts`, `stsz`, `stco`…) and movie
+/// fragments are neither read nor checked: every track's `samples` (and `sample_groups`, `sdtp`)
+/// stay empty, so the cost is bounded by the `moov` box alone. For files that are looked at,
+/// not played (capture time, place, picture size); a fragmented file's duration may be 0.
+pub fn open_headers<S: ByteSource>(src: S) -> Result<Mp4File> {
+    open_with(src, false)
+}
+
+fn open_with<S: ByteSource>(src: S, tables: bool) -> Result<Mp4File> {
     let len = src.len();
     let mut offset = 0u64;
     let mut ftyp: Option<Vec<u8>> = None;
     let mut moov: Option<(u64, Vec<u8>)> = None;
     let mut moofs: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut fragment_count = 0usize;
     while offset + 8 <= len {
         let n = (len - offset).min(32) as usize;
         let mut hb = [0u8; 32];
@@ -254,7 +273,12 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
         match &h.kind.0 {
             b"ftyp" if ftyp.is_none() => ftyp = Some(read_body(1 << 16)?),
             b"moov" if moov.is_none() => moov = Some((offset, read_body(MAX_HEADER_BOX)?)),
-            b"moof" => moofs.push((offset, read_body(MAX_HEADER_BOX)?)),
+            b"moof" => {
+                fragment_count += 1;
+                if tables {
+                    moofs.push((offset, read_body(MAX_HEADER_BOX)?));
+                }
+            }
             _ => {}
         }
         if h.size.is_none() {
@@ -270,11 +294,13 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
         is_quicktime: true,
         timescale: 0,
         duration: 0,
+        creation_time: 0,
+        modification_time: 0,
         tracks: Vec::new(),
         metadata: Metadata::default(),
         fragmented: false,
         moov_offset,
-        fragment_count: moofs.len(),
+        fragment_count,
     };
     if let Some(f) = &ftyp {
         let mut c = Cur::new(f, "ftyp");
@@ -295,11 +321,13 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
                 let mut c = Cur::new(b.payload, "mvhd");
                 let (v, _) = c.full_header()?;
                 if v == 1 {
-                    c.skip(16)?;
+                    file.creation_time = c.u64()?;
+                    file.modification_time = c.u64()?;
                     file.timescale = c.u32()?;
                     file.duration = c.u64()?;
                 } else {
-                    c.skip(8)?;
+                    file.creation_time = c.u32()? as u64;
+                    file.modification_time = c.u32()? as u64;
                     file.timescale = c.u32()?;
                     file.duration = c.u32()? as u64;
                 }
@@ -322,7 +350,7 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
         }
     }
     for p in trak_payloads {
-        let t = parse_trak(p, &file, len)?;
+        let t = parse_trak(p, &file, len, tables)?;
         file.tracks.push(t);
     }
     // Movie fragments.
@@ -379,7 +407,7 @@ fn rescale(v: i128, from: u32, to: u32) -> i64 {
     (v * to as i128 / from as i128).clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
-fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64) -> Result<Track> {
+fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64, tables: bool) -> Result<Track> {
     let mut t = Track {
         id: 0,
         kind: TrackKind::Other,
@@ -513,7 +541,7 @@ fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64) -> Result<Track> {
         }
     }
     if let Some(stbl) = minf.and_then(|m| find(m, b"stbl")) {
-        parse_stbl(stbl, &mut t, file.is_quicktime, file_len)?;
+        parse_stbl(stbl, &mut t, file.is_quicktime, file_len, tables)?;
     }
     Ok(t)
 }
@@ -552,7 +580,8 @@ impl SttsCursor<'_> {
     }
 }
 
-fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<()> {
+/// The sample table; with `tables` false only the sample descriptions (`stsd`).
+fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, tables: bool) -> Result<()> {
     let mut stts: Vec<(u32, u32)> = Vec::new();
     let mut ctts: Vec<(u32, u32)> = Vec::new();
     let mut stss: Option<Vec<u32>> = None;
@@ -565,6 +594,9 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<
     let mut sgpd: HashMap<FourCc, Vec<Vec<u8>>> = HashMap::new();
     for b in boxes(stbl) {
         let b = b?;
+        if !tables && b.kind != b"stsd" {
+            continue;
+        }
         let mut c = Cur::new(b.payload, "stbl child");
         match &b.kind.0 {
             b"stsd" => {
@@ -945,6 +977,55 @@ mod tests {
         b.leaf(b"cmov", &[]);
         b.end(m);
         assert!(matches!(open(b.buf), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn mvhd_creation_and_modification_times() {
+        // version 0: 32-bit times; version 1: 64-bit times (seconds since 1904)
+        for (v, created, modified) in [(0u8, 3_871_466_520u64, 3_871_466_521u64), (1, 0x1_0000_0005, 0x1_0000_0006)] {
+            let mut b = BoxBuf::new();
+            let moov = b.start(b"moov");
+            full(&mut b, b"mvhd", v, |b| {
+                if v == 1 {
+                    b.u64(created);
+                    b.u64(modified);
+                    b.u32(600);
+                    b.u64(1200);
+                } else {
+                    b.u32(created as u32);
+                    b.u32(modified as u32);
+                    b.u32(600);
+                    b.u32(1200);
+                }
+                b.zeros(80);
+            });
+            b.end(moov);
+            let f = open(b.buf.as_slice()).unwrap();
+            assert_eq!((f.creation_time, f.modification_time, f.timescale, f.duration), (created, modified, 600, 1200), "version {v}");
+        }
+        // unset times read as 0 (the hand-made file writes zeros)
+        let f = open(handmade(None).as_slice()).unwrap();
+        assert_eq!((f.creation_time, f.modification_time), (0, 0));
+    }
+
+    #[test]
+    fn headers_only_skip_the_sample_tables() {
+        let d = handmade(None);
+        let full = open(d.as_slice()).unwrap();
+        let head = open_headers(d.as_slice()).unwrap();
+        let (t, ft) = (&head.tracks[0], &full.tracks[0]);
+        assert!(t.samples.is_empty() && t.sample_groups.is_empty() && t.sdtp.is_empty());
+        assert_eq!((&t.entries, t.width, t.height, &t.edits, t.edit_offset), (&ft.entries, 320, 240, &ft.edits, ft.edit_offset));
+        assert_eq!((t.kind, t.timescale, t.duration, &t.handler_name), (ft.kind, ft.timescale, ft.duration, &ft.handler_name));
+        assert_eq!((head.timescale, head.duration, &head.metadata, head.major_brand), (full.timescale, full.duration, &full.metadata, full.major_brand));
+        // tables the full parse refuses (a count beyond its box, a constant-size `stsz` of 4
+        // billion samples) are not even looked at
+        let mut bad = handmade(None);
+        let p = bad.windows(4).position(|w| w == b"stts").unwrap();
+        bad[p + 8..p + 12].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(open(bad.as_slice()).is_err());
+        assert_eq!(open_headers(bad.as_slice()).unwrap().tracks[0].entries.len(), 1);
+        assert!(open_headers(handmade(Some((1, u32::MAX))).as_slice()).unwrap().tracks[0].samples.is_empty());
     }
 
     #[test]

@@ -51,6 +51,11 @@ fn synthetic_files() -> Vec<Vec<u8>> {
 }
 
 fn exercise(data: &[u8]) -> bool {
+    if let Ok(h) = open_headers(data) {
+        for t in &h.tracks {
+            let _ = (t.display_rotation(), t.video().map(|v| v.width), t.codec());
+        }
+    }
     let r = open(data);
     let ok = r.is_ok();
     if let Ok(f) = r {

@@ -23,8 +23,11 @@ let bytes = mp4.read_sample(&file, v, key)?;    // raw sample (AVCC/HVCC length-
 - `open` reads only top-level box headers, `ftyp`, `moov` and every `moof`. It never reads `mdat`.
   The one exception is the first sample of a `tmcd` track, which it reads (4 bytes) to get the timecode
   start frame.
-- `Mp4File`: brands, `is_quicktime`, movie `timescale`/`duration`, `tracks`, `metadata`, `fragmented`,
-  `fragment_count`.
+- `open_headers` reads the same but skips the sample tables and movie fragments (tracks keep their
+  headers, edit lists and sample descriptions; `samples` stay empty), so its cost is bounded by the
+  `moov` box alone: for metadata of files that are looked at, not played (KI-Regie's capture info).
+- `Mp4File`: brands, `is_quicktime`, movie `timescale`/`duration`, `creation_time`/`modification_time`
+  (`mvhd`, seconds since 1904-01-01 UTC, 0 when unset), `tracks`, `metadata`, `fragmented`, `fragment_count`.
 - `Track`: `id`, `kind` (Video/Audio/Timecode/Subtitle/Other), `handler`, `timescale`, `duration`,
   `language`, `tkhd` fields (size, matrix, volume, enabled), `entries: Vec<SampleEntry>`, `samples`,
   `edits`, `edit_offset`, `references` (`tref`), `sdtp`, `sample_groups` (`sbgp`+`sgpd`, raw), `pcm_chunked`.
