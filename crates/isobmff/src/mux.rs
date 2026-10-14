@@ -959,5 +959,11 @@ mod tests {
             assert_eq!(f.read_sample(out.as_slice(), 0, i).unwrap(), vec![i as u8; 10]);
         }
         assert_eq!(t.sync_sample_before(5), 3);
+        // headers only: the fragments are counted, not read
+        let h = crate::open_headers(out.as_slice()).unwrap();
+        assert!(h.fragmented);
+        assert_eq!(h.fragment_count, 2);
+        assert!(h.tracks[0].samples.is_empty());
+        assert_eq!(h.tracks[0].entries, t.entries);
     }
 }
