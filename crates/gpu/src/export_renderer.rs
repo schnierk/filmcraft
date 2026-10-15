@@ -72,9 +72,10 @@ pub mod timing {
     }
 }
 
-/// Set once the shared export device reported an uncaptured error (validation, out of memory)
-/// or was lost: every export renders on the CPU from then on. The device is shared by every
-/// renderer and lives in a `OnceLock`, so it is not recreated in this process.
+/// Set once the shared export device reported an error outside a frame's error scopes or a
+/// validation error, or was lost: every export renders on the CPU from then on. The device is
+/// shared by every renderer and lives in a `OnceLock`, so it is not recreated in this process.
+/// Running out of memory while drawing a frame does not set it ([`ExportRenderer::render`]).
 static DEVICE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Retire the shared export device, logging the first reason only.
@@ -90,9 +91,7 @@ fn device_failed() -> bool {
 
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     device: wgpu::Device,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
     compositor: GpuCompositor,
 }
@@ -141,7 +140,7 @@ impl ExportRenderer {
                     return None;
                 }
                 let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let (w, h, px) = self.draw(|c| c.render_export_prepared(&plan, Some(&prep)))?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
                     return None;
@@ -152,6 +151,30 @@ impl ExportRenderer {
             // Transitions: the export path leaves them to the CPU reference renderer.
             FramePlan::Composite { .. } => None,
         }
+    }
+
+    /// Run `f` on the compositor, catching the errors it causes on this thread. Running out of
+    /// GPU memory (other programs hold most of it, or the frame's sources do not fit) sends this
+    /// frame to the CPU and starts a fresh compositor, which lets go of every texture and buffer
+    /// the old one held (one of them may be the failed allocation); the next frame tries the GPU
+    /// again. Validation errors still retire the device: they mean a bug, not a full GPU.
+    fn draw<R>(&mut self, f: impl FnOnce(&mut GpuCompositor) -> Option<R>) -> Option<R> {
+        // error scopes are per thread (wgpu's `std` feature), and a renderer draws on the thread
+        // that calls it
+        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let invalid = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let out = f(&mut self.compositor);
+        let invalid = pollster::block_on(invalid.pop());
+        if let Some(e) = pollster::block_on(oom.pop()) {
+            log::warn!("GPU export ran out of memory; this frame renders on the CPU and the GPU starts afresh ({e})");
+            self.compositor = GpuCompositor::new(&self.device, &self.queue);
+            return None;
+        }
+        if let Some(e) = invalid {
+            mark_device_failed(&format!("GPU error: {e}"));
+            return None;
+        }
+        out
     }
 }
 

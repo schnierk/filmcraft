@@ -329,6 +329,61 @@ fn upload_cache_keeps_buffers_alive() {
     assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
 }
 
+/// An opaque RGBA8 frame of one colour.
+fn solid_frame(w: u32, h: u32, rgba: [u8; 4]) -> Arc<VideoFrame> {
+    let px = Arc::new(rgba.repeat((w * h) as usize));
+    Arc::new(VideoFrame { width: w, height: h, data: PixelData::Rgba8(px), ..(*yuv_frame(w, h)).clone() })
+}
+
+#[test]
+fn upload_cache_drops_old_uploads_beyond_its_byte_budget() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let frame_bytes = 64 * 32 * 4;
+    c.set_upload_budget(frame_bytes * 5 / 2);
+    for i in 0..6u8 {
+        let frame = solid_frame(64, 32, [40 * i, 0, 0, 255]);
+        c.composite(&FramePlan::Layers { width: 64, height: 32, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] });
+    }
+    // the two most recent stills fit in two and a half stills' worth; the older four were dropped
+    assert_eq!(c.uploads.len(), 2);
+    assert_eq!(c.upload_cache_bytes(), 2 * frame_bytes);
+}
+
+#[test]
+fn a_frame_keeps_its_own_uploads_over_the_byte_budget() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    // far below one still: every upload is over budget as soon as it is made
+    c.set_upload_budget(1);
+    let red = solid_frame(16, 16, [255, 0, 0, 255]);
+    let blue = solid_frame(16, 16, [0, 0, 255, 255]);
+    let plan = FramePlan::Layers {
+        width: 32,
+        height: 16,
+        layers: vec![PlanLayer::new(red, Affine::IDENTITY, 1.0, Blend::Normal), PlanLayer::new(blue, Affine::translate(16.0, 0.0), 1.0, Blend::Normal)],
+    };
+    c.composite(&plan);
+    let (w, _, px) = c.read_output().expect("readback");
+    let at = |x: u32, y: u32| px.as_chunks::<4>().0.get((y * w + x) as usize).copied().expect("pixel");
+    // the red layer was uploaded first: dropping it for the blue one would draw it transparent
+    assert_eq!(at(4, 8), [255, 0, 0, 255]);
+    assert_eq!(at(28, 8), [0, 0, 255, 255]);
+    // and the next frame lets them go
+    c.composite(&FramePlan::Layers {
+        width: 32,
+        height: 16,
+        layers: vec![PlanLayer::new(solid_frame(16, 16, [0, 255, 0, 255]), Affine::IDENTITY, 1.0, Blend::Normal)],
+    });
+    assert_eq!(c.uploads.len(), 1);
+}
+
 /// The WGSL tetrahedral LUT matches `Lut3d::apply` on the CPU.
 #[test]
 fn gpu_lut_matches_cpu_tetrahedral() {
