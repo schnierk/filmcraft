@@ -26,6 +26,7 @@ pub mod timing {
     static MAP_WAIT_NS: AtomicU64 = AtomicU64::new(0);
     static CONVERT_NS: AtomicU64 = AtomicU64::new(0);
     static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static OUT_OF_MEMORY: AtomicU64 = AtomicU64::new(0);
 
     /// Totals since the last [`reset`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub mod timing {
         pub convert: Duration,
         /// Frames composited by the GPU.
         pub frames: u64,
+        /// Frames sent to the CPU because the GPU ran out of memory drawing them.
+        pub out_of_memory: u64,
     }
 
     fn add(counter: &AtomicU64, d: Duration) {
@@ -60,13 +63,23 @@ pub mod timing {
         FRAMES.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn add_out_of_memory() {
+        OUT_OF_MEMORY.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn get() -> GpuTimings {
         let d = |c: &AtomicU64| Duration::from_nanos(c.load(Ordering::Relaxed));
-        GpuTimings { submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
+        GpuTimings {
+            submit: d(&SUBMIT_NS),
+            map_wait: d(&MAP_WAIT_NS),
+            convert: d(&CONVERT_NS),
+            frames: FRAMES.load(Ordering::Relaxed),
+            out_of_memory: OUT_OF_MEMORY.load(Ordering::Relaxed),
+        }
     }
 
     pub fn reset() {
-        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
+        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES, &OUT_OF_MEMORY] {
             c.store(0, Ordering::Relaxed);
         }
     }
@@ -89,11 +102,18 @@ fn device_failed() -> bool {
     DEVICE_FAILED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The least of recent uploads an export renderer's compositor keeps once the GPU has run out of
+/// memory on it.
+const MIN_UPLOAD_BUDGET: u64 = 128 << 20;
+
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
     compositor: GpuCompositor,
+    /// Its compositor's upload budget: [`crate::UPLOAD_CACHE_BYTES`], halved each time the GPU
+    /// runs out of memory on this renderer (down to [`MIN_UPLOAD_BUDGET`]).
+    upload_budget: u64,
 }
 
 impl ExportRenderer {
@@ -125,7 +145,7 @@ impl ExportRenderer {
             return None;
         }
         let compositor = GpuCompositor::new(&device, &queue);
-        Some(Self { _instance: instance, device, queue, compositor })
+        Some(Self { _instance: instance, device, queue, compositor, upload_budget: crate::UPLOAD_CACHE_BYTES })
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
@@ -156,8 +176,9 @@ impl ExportRenderer {
     /// Run `f` on the compositor, catching the errors it causes on this thread. Running out of
     /// GPU memory (other programs hold most of it, or the frame's sources do not fit) sends this
     /// frame to the CPU and starts a fresh compositor, which lets go of every texture and buffer
-    /// the old one held (one of them may be the failed allocation); the next frame tries the GPU
-    /// again. Validation errors still retire the device: they mean a bug, not a full GPU.
+    /// the old one held (one of them may be the failed allocation) and keeps half as many bytes
+    /// of recent uploads; the next frame tries the GPU again. Validation errors still retire the
+    /// device: they mean a bug, not a full GPU.
     fn draw<R>(&mut self, f: impl FnOnce(&mut GpuCompositor) -> Option<R>) -> Option<R> {
         // error scopes are per thread (wgpu's `std` feature), and a renderer draws on the thread
         // that calls it
@@ -166,8 +187,14 @@ impl ExportRenderer {
         let out = f(&mut self.compositor);
         let invalid = pollster::block_on(invalid.pop());
         if let Some(e) = pollster::block_on(oom.pop()) {
-            log::warn!("GPU export ran out of memory; this frame renders on the CPU and the GPU starts afresh ({e})");
+            self.upload_budget = (self.upload_budget / 2).max(MIN_UPLOAD_BUDGET);
+            log::warn!(
+                "GPU export ran out of memory; this frame renders on the CPU and the renderer starts afresh, keeping {} MiB of uploads ({e})",
+                self.upload_budget >> 20
+            );
+            timing::add_out_of_memory();
             self.compositor = GpuCompositor::new(&self.device, &self.queue);
+            self.compositor.set_upload_budget(self.upload_budget);
             return None;
         }
         if let Some(e) = invalid {
