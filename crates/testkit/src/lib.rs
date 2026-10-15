@@ -6,12 +6,14 @@
 //!   collision-free temporary names for concurrent generators.
 //! - [`golden`]: RGBA8 images, PNG I/O, image-difference metrics and golden-file checks
 //!   (`FILMCRAFT_BLESS=1` regenerates references).
+//! - [`heif`]: a small HEIF / AVIF writer (items, properties, references, every `iloc` layout).
 //!
 //! ffmpeg/ffprobe are external test oracles and fixture generators only; they are never linked
 //! or shipped (AGENTS.md §2).
 
 pub mod fixtures;
 pub mod golden;
+pub mod heif;
 pub mod oracle;
 pub mod wav;
 
