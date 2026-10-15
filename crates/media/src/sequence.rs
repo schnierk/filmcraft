@@ -4,9 +4,10 @@
 //!   frames from the chosen file's number up to the highest number present (gaps are `None`).
 //! - [`ImageSequenceSource`] decodes frames on demand through a [`FrameLoader`] (the host's file
 //!   access) with the still decoders (PNG, JPEG, TIFF, BMP, WebP, GIF, Targa, DPX; OpenEXR and DNG
-//!   camera raw as linear float frames), keeps recently used frames in a byte-budgeted
-//!   [`FrameCache`], and shows the nearest earlier frame for a missing or undecodable one (the
-//!   nearest later frame before the first).
+//!   camera raw as linear float frames; formats decoded by higher layers, such as HEIF / AVIF,
+//!   through the [`StillDecoder`]s given to [`ImageSequenceSource::with_decoders`]), keeps recently
+//!   used frames in a byte-budgeted [`FrameCache`], and shows the nearest earlier frame for a
+//!   missing or undecodable one (the nearest later frame before the first).
 //! - The frame rate is the caller's (Settings ▸ Media ▸ Indeterminate Media Timebase), except for
 //!   CinemaDNG: a frame rate and start time code in the first frame's tags are the sequence's.
 
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_time::FrameRate;
 
+use crate::still::StillDecoder;
 use crate::{FrameCache, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
 
 /// Reads a file's bytes (the host's file access).
@@ -126,17 +128,24 @@ pub struct ImageSequenceSource {
     frames: Vec<Option<String>>,
     loader: FrameLoader,
     cache: FrameCache<usize>,
+    decoders: Vec<StillDecoder>,
 }
 
 impl ImageSequenceSource {
     /// `frames`: path per frame (`None`: missing). The first present frame is decoded now (size,
     /// alpha); the rest on demand.
     pub fn new(name: &str, frames: Vec<Option<String>>, rate: FrameRate, loader: FrameLoader) -> Result<Self> {
+        Self::with_decoders(name, frames, rate, loader, &[])
+    }
+
+    /// [`ImageSequenceSource::new`], trying `decoders` on each frame file before the built-in still
+    /// decoders (`filmcraft_codecs::still_decoders()`: HEIF / AVIF).
+    pub fn with_decoders(name: &str, frames: Vec<Option<String>>, rate: FrameRate, loader: FrameLoader, decoders: &[StillDecoder]) -> Result<Self> {
         let first = frames.iter().flatten().next().ok_or_else(|| MediaError::Offline(format!("{name}: no frames")))?.clone();
         let bytes = loader(&first).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(format!("{first}: {e}")) } else { MediaError::Io(format!("{first}: {e}")) }
         })?;
-        let (frame, has_alpha, pixel_format, timing) = decode_frame(&first, &bytes)?;
+        let (frame, has_alpha, pixel_format, timing) = decode_frame(&first, &bytes, decoders)?;
         let (w, h) = (frame.width, frame.height);
         let (rate, start_timecode) = match timing {
             Some(info) => crate::still::dng::sequence_timing(&info, rate),
@@ -167,7 +176,7 @@ impl ImageSequenceSource {
         };
         let cache = FrameCache::new(256 << 20);
         cache.insert(frames.iter().position(Option::is_some).unwrap_or(0), Arc::new(frame));
-        Ok(Self { info, frames, loader, cache })
+        Ok(Self { info, frames, loader, cache, decoders: decoders.to_vec() })
     }
 
     pub fn frame_count(&self) -> usize {
@@ -190,7 +199,7 @@ impl ImageSequenceSource {
         }
         let path = self.frames.get(i).and_then(|f| f.as_deref()).ok_or(MediaError::NoStream("video"))?;
         let bytes = (self.loader)(path).map_err(|e| MediaError::Io(format!("{path}: {e}")))?;
-        let f = Arc::new(decode_frame(path, &bytes)?.0);
+        let f = Arc::new(decode_frame(path, &bytes, &self.decoders)?.0);
         self.cache.insert(i, f.clone());
         Ok(f)
     }
@@ -221,10 +230,16 @@ impl MediaSource for ImageSequenceSource {
     }
 }
 
-/// Decode one frame file: OpenEXR, Radiance HDR and DNG camera raw as linear floats (DNG with its metadata, for
-/// the sequence's timing), every other format through the still decoders as RGBA8. Returns the
-/// frame, whether it has alpha, and its pixel format for the media info.
-fn decode_frame(name: &str, bytes: &[u8]) -> Result<(VideoFrame, bool, String, Option<filmcraft_dng::Info>)> {
+/// Decode one frame file: a format one of `decoders` takes as RGBA8, OpenEXR, Radiance HDR and DNG
+/// camera raw as linear floats (DNG with its metadata, for the sequence's timing), every other
+/// format through the still decoders as RGBA8. Returns the frame, whether it has alpha, and its
+/// pixel format for the media info.
+fn decode_frame(name: &str, bytes: &[u8], decoders: &[StillDecoder]) -> Result<(VideoFrame, bool, String, Option<filmcraft_dng::Info>)> {
+    if let Some(r) = decoders.iter().find_map(|d| d(name, bytes)) {
+        let img = r?;
+        let pixel_format = if img.has_alpha { "RGBA 8-bit" } else { "RGB 8-bit" }.to_string();
+        return Ok((VideoFrame::rgba8(img.width, img.height, img.rgba), img.has_alpha, pixel_format, None));
+    }
     if crate::still::exr::sniff(bytes) {
         let d = crate::still::exr::decode(name, bytes)?;
         return Ok((d.frame, d.has_alpha, d.pixel_format, None));

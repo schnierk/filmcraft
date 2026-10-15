@@ -52,8 +52,10 @@ pub struct Mp4Source {
     audios: Vec<Mp4Audio>,
 }
 
+/// Whether `b` (the first bytes of a file) looks like MP4 / MOV. HEIF and AVIF files are ISOBMFF
+/// too but go to [`crate::heif`] (their `ftyp` names a HEIF brand).
 pub fn sniff(b: &[u8]) -> bool {
-    b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip")
+    b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip") && !crate::heif::sniff(b)
 }
 
 /// Audio packet start positions in source sample frames at `rate`: the running total of the sample

@@ -142,7 +142,8 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let loader: filmcraft_media::sequence::FrameLoader = Arc::new(|p: &str| std::fs::read(p));
         // the timebase of a fresh install (Settings ▸ Media ▸ Indeterminate Media Timebase)
-        let src = ImageSequenceSource::new(&name, frames, filmcraft_time::FrameRate::FPS_29_97, loader).map_err(|e| format!("{path}: {e}"))?;
+        let src = ImageSequenceSource::with_decoders(&name, frames, filmcraft_time::FrameRate::FPS_29_97, loader, &filmcraft_codecs::still_decoders())
+            .map_err(|e| format!("{path}: {e}"))?;
         let mut v = serde_json::to_value(filmcraft_media::MediaSource::info(&src)).unwrap_or_default();
         v["imageSequence"] = json!({
             "first": src.frame_path(0),

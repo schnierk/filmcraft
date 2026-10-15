@@ -172,7 +172,9 @@ pub trait MediaSource: Send + Sync {
 pub type SharedSource = Arc<dyn MediaSource>;
 
 /// File extensions we recognise at import (the media browser filters on these).
-pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng"];
+/// HEIF / HEIC (`heic`, `heif`, `hif`) and AVIF (`avif`) are decoded by `filmcraft-codecs`.
+pub const STILL_EXTENSIONS: &[&str] =
+    &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng", "heic", "heif", "hif", "avif"];
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "bwf", "aif", "aiff", "mp3", "mp2", "m4a", "aac", "flac", "ogg", "opus"];
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "m2t", "ts", "mpg", "mpeg", "vob", "mod", "tod", "m2v", "m1v", "mpv", "3gp", "y4m", "apv",
@@ -252,7 +254,9 @@ mod importable_tests {
 
     #[test]
     fn camera_extensions_match_regardless_of_case() {
-        for name in ["clip.mov", "clip.MOV", "clip.Mov", "shot.MP4", "IMG_0001.JPG", "sound.WAV", "take.M2TS"] {
+        for name in
+            ["clip.mov", "clip.MOV", "clip.Mov", "shot.MP4", "IMG_0001.JPG", "sound.WAV", "take.M2TS", "IMG_1397.HEIC", "photo.heif", "R5_0001.HIF", "x.avif"]
+        {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));

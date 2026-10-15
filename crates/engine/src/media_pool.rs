@@ -103,7 +103,7 @@ pub fn open_image_sequence(first: &str, services: &dyn Services, rate: filmcraft
             Arc::new(move |p: &str| files.get(p).map(|b| b.to_vec()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, p.to_string())))
         }
     };
-    Ok(Arc::new(filmcraft_media::sequence::ImageSequenceSource::new(name, frames, rate, loader)?))
+    Ok(Arc::new(filmcraft_media::sequence::ImageSequenceSource::with_decoders(name, frames, rate, loader, &filmcraft_codecs::still_decoders())?))
 }
 
 /// The frames of the image sequence starting at `first` (see [`open_image_sequence`]).

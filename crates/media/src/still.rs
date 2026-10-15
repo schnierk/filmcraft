@@ -1,6 +1,7 @@
 //! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR, DNG camera raw) as media
 //! sources. Animated PNG and GIF files open as movies instead ([`crate::animated`]); here they would
-//! show their first frame.
+//! show their first frame. HEIF / HEIC and AVIF stills are decoded in `filmcraft-codecs` (`heif`),
+//! which hands the picture to [`StillSource::from_rgba`].
 
 use std::sync::Arc;
 
@@ -30,6 +31,10 @@ pub fn sniff(name: &str, b: &[u8]) -> bool {
         || b.starts_with(b"MM\0*")
         || b.starts_with(b"BM")
 }
+
+/// A still decoder of a higher layer (HEIF / AVIF in `filmcraft-codecs`): `None` when the file is
+/// not its format, else the decoded picture or why it could not be decoded.
+pub type StillDecoder = fn(name: &str, bytes: &[u8]) -> Option<Result<Raster>>;
 
 /// A decoded picture: straight-alpha RGBA8, top row first.
 pub struct Raster {
@@ -101,6 +106,15 @@ impl StillSource {
             file_size: Some(file_size),
         };
         Self { info, frame: Arc::new(VideoFrame::rgba8(w, h, rgba)) }
+    }
+
+    /// The same still reporting `codec` (by default the file extension in capitals): a HEIF file
+    /// is "HEIC" or "AVIF" whatever its extension.
+    pub fn with_codec(mut self, codec: &str) -> Self {
+        if let Some(v) = self.info.video.as_mut() {
+            v.codec = codec.to_string();
+        }
+        self
     }
 }
 
