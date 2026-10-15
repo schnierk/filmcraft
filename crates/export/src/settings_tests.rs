@@ -922,11 +922,11 @@ fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "av1"})).unwrap();
     assert_eq!(s.format, Format::Av1);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "av1");
-    // MP4 with AAC only: a QuickTime multiplexer setting left over from H.264 does not apply
+    // MPEG-4 by default; #1185 lets AV1 go into QuickTime too, like H.264 and H.265
     let a = ExportSettings { format: Format::Av1, ..Default::default() };
     assert_eq!((a.audio_codec(), a.extension()), (AudioCodec::Aac, "mp4"));
     let mov = ExportSettings { multiplexer: Multiplexer::Mov, ..a.clone() };
-    assert_eq!((mov.audio_codec(), mov.extension()), (AudioCodec::Aac, "mp4"));
+    assert_eq!((mov.audio_codec(), mov.extension()), (AudioCodec::Aac, "mov"));
     let b = a.estimate_bytes(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
     assert!((b as f64 - 25.4e6).abs() < 0.2e6, "{b}");
     let summary = a.summary(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));

@@ -124,6 +124,11 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
     let dir = Scratch::new("presets");
     for pr in &presets {
         let name = pr["name"].as_str().unwrap();
+        // AV1 (#1185) exports only where a hardware encoder registered itself, not in this test
+        let fmt = s.execute("export.presets.get", json!({"name": name})).unwrap()["settings"]["format"].as_str().unwrap_or_default().to_string();
+        if filmcraft_export::Format::from_name(&fmt).is_some_and(|f| !filmcraft_export::available(f)) {
+            continue;
+        }
         let sub = dir.0.join(format!("p{}", filmcraft_export::presets::preset_key(name)));
         std::fs::create_dir_all(&sub).unwrap();
         let path = sub.join("Demo").to_string_lossy().to_string();
