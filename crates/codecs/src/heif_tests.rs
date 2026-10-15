@@ -282,6 +282,10 @@ fn info_reads_the_container_only() {
     assert_eq!(i.icc_profile.as_deref(), Some(&b"not really a profile"[..]));
     assert_eq!(i.exif.as_deref(), Some(&b"II*\0\x08\0\0\0"[..]));
     assert_eq!((i.codec.name(), i.codec.format()), ("HEVC", "HEIC"));
+    // the same from a byte source (a library scan reads headers, not whole files)
+    let bytes = h.build();
+    let from = info_from(&bytes).unwrap();
+    assert_eq!((from.width, from.height, from.exif.as_deref()), (180, 250, Some(&b"II*\0\x08\0\0\0"[..])));
 }
 
 #[test]

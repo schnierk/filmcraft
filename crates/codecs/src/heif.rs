@@ -139,8 +139,15 @@ pub fn sniff(head: &[u8]) -> bool {
 
 /// The primary image's size, codec, transforms and metadata, without decoding any pixels.
 pub fn info(bytes: &[u8]) -> Result<HeifInfo> {
-    let file = open_meta(bytes)?;
-    Ctx { file: &file, src: bytes }.info()
+    info_from(bytes)
+}
+
+/// [`info`] from any byte source: reads only the `meta` box and the small items it needs (a
+/// grid's description, the `Exif` item), never the coded pictures, so it suits a scan through
+/// a whole photo library.
+pub fn info_from<S: ByteSource + ?Sized>(src: &S) -> Result<HeifInfo> {
+    let file = open_meta(src)?;
+    Ctx { file: &file, src }.info()
 }
 
 /// Decode the primary image.
