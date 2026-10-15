@@ -891,13 +891,16 @@ fn build(
     {
         title_clips.push(v);
     }
+    // the closing title's place at the end (on the chapter names' track: they make room for it)
+    let outro_len = bar_ticks(4.0);
+    let outro_at = (film_end > outro_len + title_len).then(|| film_end - outro_len);
     for (ci, _) in &chapter_first {
         let Some(c) = chs.get(*ci) else { continue };
         let Some(shot) = shots.iter().find(|x| x.chapter == *ci) else { continue };
         // the first chapter's name waits for the film title to go; a name stays up for at most
-        // three seconds and never into the next chapter
+        // three seconds and never into the next chapter or the closing title
         let at = if shot.start < title_len { title_len } else { shot.start };
-        let chapter_end = shots.iter().filter(|x| x.chapter > *ci).map(|x| x.start).min().unwrap_or(film_end).min(film_end);
+        let chapter_end = shots.iter().filter(|x| x.chapter > *ci).map(|x| x.start).min().unwrap_or(film_end).min(film_end).min(outro_at.unwrap_or(film_end));
         let len = bar_ticks(3.0).min(chapter_end - at.min(chapter_end));
         if len < bar_ticks(1.0) || c.title.is_empty() {
             continue;
@@ -923,16 +926,14 @@ fn build(
         }
     }
     let outro = if de { "Bis zum nächsten Abenteuer" } else { "Until the next adventure" };
-    let outro_len = bar_ticks(4.0);
-    if film_end > outro_len + title_len {
-        let at = film_end - outro_len;
-        if let Some(v) = soft(
+    if let Some(at) = outro_at
+        && let Some(v) = soft(
             s,
             "graphics.newText",
             json!({"text": outro, "size": (unit * 0.06).round(), "font": "Inter", "fontStyle": "Bold", "position": [w / 2.0, h * 0.5], "seconds": outro_len.seconds(), "track": 2, "time": at.0}),
-        ) {
-            title_clips.push(v);
-        }
+        )
+    {
+        title_clips.push(v);
     }
     for v in &title_clips {
         let Some(clip) = v.get("clip").and_then(Value::as_u64) else { continue };
