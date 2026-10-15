@@ -165,30 +165,43 @@ fn analyse(
             .max_by(|a, b| a.seconds.unwrap_or(0.0).total_cmp(&b.seconds.unwrap_or(0.0)))
             .map(|a| a.path.clone()),
     };
-    let total = videos.len() as u64 + 2;
-    // portrait photos in a landscape film (and the other way round) get a small blurred background
-    let frame_ratio = plan.width.max(1) as f64 / plan.height.max(1) as f64;
-    let mut media: Vec<Medium> = photos
-        .into_iter()
-        .map(|c| {
-            let ratio = (c.width.max(1) as f64 / c.height.max(1) as f64) / frame_ratio;
-            let needs = c.width > 0 && c.height > 0 && !(0.7..=1.45).contains(&ratio);
-            let background = if needs { backgrounds.and_then(|dir| blurred_background(pool, services, &c.path, dir)) } else { None };
-            Medium { candidate: c, highlights: None, background, background_item: None }
-        })
-        .collect();
+    let total = videos.len() as u64 + 3;
+    // Every photo gets a small blurred background: the film puts it behind a photo of another
+    // shape (a portrait photo in a landscape film), and another version of the film
+    // (`regie.variant`: a 9:16 reel of landscape photos) needs it for others. Blurring the
+    // full-size photo on every frame instead is slow and holds gigabytes of GPU memory.
+    progress(0, total, if de { "Bereite die Fotos vor …".into() } else { "Preparing the photos…".into() });
+    let backgrounds: Vec<Option<String>> = match backgrounds {
+        Some(dir) => {
+            let one = |c: &Candidate| if cancel.load(Ordering::Relaxed) { None } else { blurred_background(pool, services, &c.path, dir) };
+            // a few at a time: each decodes a whole photo (up to ~200 MB for 48 megapixels)
+            match rayon::ThreadPoolBuilder::new().num_threads(4).build() {
+                Ok(workers) => workers.install(|| {
+                    use rayon::prelude::*;
+                    photos.par_iter().map(one).collect()
+                }),
+                Err(_) => photos.iter().map(one).collect(),
+            }
+        }
+        None => vec![None; photos.len()],
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Err(stopped(de));
+    }
+    let mut media: Vec<Medium> =
+        photos.into_iter().zip(backgrounds).map(|(c, background)| Medium { candidate: c, highlights: None, background, background_item: None }).collect();
     for (k, c) in videos.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err(stopped(de));
         }
         let name = std::path::Path::new(&c.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         progress(
-            k as u64 + 1,
+            k as u64 + 2,
             total,
             if de {
-                format!("Suche die besten Momente: {name} ({} von {})", k + 1, total - 2)
+                format!("Suche die besten Momente: {name} ({} von {})", k + 1, total - 3)
             } else {
-                format!("Finding the best moments: {name} ({} of {})", k + 1, total - 2)
+                format!("Finding the best moments: {name} ({} of {})", k + 1, total - 3)
             },
         );
         let highlights: Option<Highlights> = pool.open_file(&c.path, services).ok().and_then(|src| best_moments(&src, cancel));
@@ -210,26 +223,35 @@ fn analyse(
     Ok(Analysis { plan: plan.clone(), media, music, scanned, skipped, screenshots })
 }
 
-/// A small, blurred and darkened copy of the photo at `path`, written as PNG into `dir` (named
-/// after the photo, so a second film reuses it). `None` when the photo cannot be read.
+/// Longest side of a photo's blurred background, pixels: it is blurred and scaled up to fill
+/// the frame, so more would only cost memory.
+const BACKGROUND_SIDE: usize = 480;
+
+/// A small ([`BACKGROUND_SIDE`]), blurred and darkened copy of the photo at `path`, written as PNG
+/// into `dir` (named after the photo, so a second film reuses it). `None` when the photo cannot
+/// be read.
 fn blurred_background(pool: &crate::media_pool::MediaPool, services: &dyn crate::Services, path: &str, dir: &std::path::Path) -> Option<String> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
     std::fs::metadata(path).ok()?.len().hash(&mut hasher);
+    // (v2: small; the first ones kept the photo's full size)
+    ("v2", BACKGROUND_SIDE).hash(&mut hasher);
     let out = dir.join(format!("{:016x}.png", hasher.finish()));
     if out.is_file() {
         return Some(out.to_string_lossy().into_owned());
     }
     let src = pool.open_file(path, services).ok()?;
     let v = src.info().video.clone()?;
-    let scale = (480.0 / v.width.max(v.height).max(1) as f32).clamp(0.01, 1.0);
+    let scale = (BACKGROUND_SIDE as f32 / v.width.max(v.height).max(1) as f32).clamp(0.01, 1.0);
     let frame = src.video_frame(filmcraft_media::FrameRequest { time: filmcraft_time::Tick::ZERO, scale }).ok()?;
     let (w, h) = (frame.width as usize, frame.height as usize);
-    let mut px = frame.to_rgba8();
+    let px = frame.to_rgba8();
     if w < 2 || h < 2 || px.len() != w.checked_mul(h)?.checked_mul(4)? {
         return None;
     }
+    // stills come at full size whatever the request asks
+    let (mut px, w, h) = shrink(&px, w, h, BACKGROUND_SIDE)?;
     let radius = (w.max(h) / 30).max(2);
     for _ in 0..3 {
         box_blur(&mut px, w, h, radius);
@@ -243,6 +265,41 @@ fn blurred_background(pool: &crate::media_pool::MediaPool, services: &dyn crate:
     std::fs::create_dir_all(dir).ok()?;
     std::fs::write(&out, png).ok()?;
     Some(out.to_string_lossy().into_owned())
+}
+
+/// `px` (straight RGBA8, `w` × `h`) scaled down by a whole factor so its longer side is at most
+/// `side`, each pixel the average of the block it covers (blocks at the right and bottom edges
+/// are smaller). Unchanged when it already fits; `None` for a buffer that does not match.
+pub(crate) fn shrink(px: &[u8], w: usize, h: usize, side: usize) -> Option<(Vec<u8>, usize, usize)> {
+    if px.len() != w.checked_mul(h)?.checked_mul(4)? {
+        return None;
+    }
+    let f = w.max(h).div_ceil(side.max(1)).max(1);
+    if f == 1 {
+        return Some((px.to_vec(), w, h));
+    }
+    let (ow, oh) = (w.div_ceil(f), h.div_ceil(f));
+    let mut out = vec![0u8; ow.checked_mul(oh)?.checked_mul(4)?];
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let mut sum = [0u32; 4];
+            let mut n = 0u32;
+            for y in oy * f..((oy + 1) * f).min(h) {
+                let row = px.get((y * w + ox * f) * 4..(y * w + ((ox + 1) * f).min(w)) * 4)?;
+                for p in row.as_chunks::<4>().0 {
+                    for (s, c) in sum.iter_mut().zip(p) {
+                        *s += u32::from(*c);
+                    }
+                    n += 1;
+                }
+            }
+            let o = out.get_mut((oy * ow + ox) * 4..(oy * ow + ox) * 4 + 4)?;
+            for (o, s) in o.iter_mut().zip(sum) {
+                *o = (s / n.max(1)) as u8;
+            }
+        }
+    }
+    Some((out, ow, oh))
 }
 
 /// One horizontal and one vertical box blur of radius `r` over straight RGBA8 pixels (edges
