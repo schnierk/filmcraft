@@ -164,6 +164,50 @@ fn variant_cuts_a_reel_from_the_last_film_without_searching_again() {
 }
 
 #[test]
+fn the_closing_title_is_not_lost_to_a_late_chapter_name() {
+    // six stills of two seconds: four on Mykonos, then two in Paris three weeks later. The Paris
+    // chapter starts where the closing title goes (the last four seconds); its name used to take
+    // that place on the same track, and the closing title was dropped.
+    let (_dir, files) = footage("regie-outro");
+    let mut s = Session::default();
+    let paths: Vec<String> = files.iter().map(|f| f.0.to_string_lossy().into_owned()).collect();
+    let r = s.execute("file.import", json!({"paths": paths})).unwrap();
+    let item = r["items"][0].as_u64().unwrap();
+    let still = |k: usize, folder: &str, created: &str| Medium {
+        candidate: Candidate {
+            path: format!("/photos/{folder}/IMG_{k}.jpg"),
+            kind: "photo".into(),
+            created: Some(created.into()),
+            width: 320,
+            height: 180,
+            folder: folder.into(),
+            item: Some(item),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let media = vec![
+        still(1, "Mykonos", "2026-09-05T10:00:00+03:00"),
+        still(2, "Mykonos", "2026-09-05T11:00:00+03:00"),
+        still(3, "Mykonos", "2026-09-05T12:00:00+03:00"),
+        still(4, "Mykonos", "2026-09-05T13:00:00+03:00"),
+        still(5, "Paris", "2026-10-01T12:00:00+02:00"),
+        still(6, "Paris", "2026-10-01T13:00:00+02:00"),
+    ];
+    let v = assemble(&mut s, &Plan { seconds: Some(12.0), ..plan("de") }, &media, None).unwrap();
+    let end = v["seconds"].as_f64().unwrap();
+    assert_eq!(v["chapters"].as_array().unwrap().len(), 2, "{v}");
+    assert!(end > 8.0, "{v}");
+    let q = s.project.sequence(ItemId(v["sequence"].as_u64().unwrap())).unwrap();
+    let secs = |t: filmcraft_time::Tick| t.0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+    let titles = q.video_tracks.get(2).map(|t| t.items.clone()).unwrap_or_default();
+    let starts: Vec<f64> = titles.iter().map(|c| secs(c.start)).collect();
+    assert!(starts.iter().any(|t| (t - (end - 4.0)).abs() < 0.05), "a closing title at {}: {starts:?}", end - 4.0);
+    // nothing before it on that track runs into it
+    assert!(titles.iter().filter(|c| secs(c.start) < end - 4.05).all(|c| secs(c.start + c.duration) <= end - 4.0 + 0.05), "{starts:?}");
+}
+
+#[test]
 fn run_without_matching_media_reports_it_and_changes_nothing() {
     let dir = tmp_dir("regie-empty");
     let mut s = Session::default();
