@@ -140,3 +140,49 @@ fn helpers() {
     assert!(timestamp("garbage").is_none());
     assert!(timestamp("2026-13-01").is_none());
 }
+
+/// A portrait film sizes its titles by the frame's short side, so they fit across it.
+#[test]
+fn portrait_titles_fit_the_width() {
+    let (_dir, files) = footage("regie-portrait");
+    let mut s = Session::default();
+    let paths: Vec<String> = files.iter().map(|f| f.0.to_string_lossy().into_owned()).collect();
+    let r = s.execute("file.import", json!({"paths": paths})).unwrap();
+    let items: Vec<u64> = r["items"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let media: Vec<Medium> = files
+        .iter()
+        .zip(&items)
+        .map(|((_, w, h, created), item)| Medium {
+            candidate: Candidate {
+                kind: "video".into(),
+                created: Some(created.to_string()),
+                width: *w,
+                height: *h,
+                seconds: Some(3.0),
+                item: Some(*item),
+                ..Default::default()
+            },
+            highlights: None,
+            background: None,
+            background_item: None,
+        })
+        .collect();
+    let plan = Plan { language: "de".into(), aspect: "9:16".into(), width: 360, height: 640, fps: 24.0, seconds: Some(9.0), ..Plan::default() };
+    let v = assemble(&mut s, &plan, &media, None).unwrap();
+    let q = s.project.sequence(ItemId(v["sequence"].as_u64().unwrap())).unwrap();
+    let sizes: Vec<f64> = q
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .flat_map(|c| c.effects.iter())
+        .filter(|e| e.effect == "graphic_text")
+        .filter_map(|e| {
+            e.params.get("size").and_then(|p| match &p.value {
+                filmcraft_project::ParamValue::Float(f) => Some(*f),
+                _ => None,
+            })
+        })
+        .collect();
+    assert!(!sizes.is_empty(), "titles were made");
+    assert!(sizes.iter().all(|s| *s <= 360.0 * 0.09), "sized by the 360 px short side: {sizes:?}");
+}

@@ -675,6 +675,8 @@ fn build(
     let seq_id = seq.get("sequence").and_then(Value::as_u64).ok_or_else(|| EngineError::Other("file.newSequence returned no sequence".into()))?;
     let fd = rate.frame_duration();
     let (w, h) = (plan.width as f64, plan.height as f64);
+    // text sizes follow the frame's short side, so titles fit portrait frames as well
+    let unit = w.min(h);
     let fade = (rate.as_f64() * 0.4).round().max(1.0) as i64;
     let mut first_main: Option<u64> = None;
     let mut last_main: Option<u64> = None;
@@ -750,8 +752,8 @@ fn build(
     // titles on V3 (track index 2)
     let bar_ticks = |secs: f64| frame_tick(secs, rate);
     let title_len = bar_ticks(4.0).min(film_end);
-    let big = (h * 0.085).round();
-    let small = (h * 0.042).round();
+    let big = (unit * 0.085).round();
+    let small = (unit * 0.042).round();
     let mut title_clips = Vec::new();
     if let Some(v) = soft(
         s,
@@ -785,7 +787,7 @@ fn build(
         if let Some(v) = soft(
             s,
             "graphics.newText",
-            json!({"text": c.title, "size": (h * 0.065).round(), "font": "Inter", "fontStyle": "Bold", "position": [w / 2.0, h * 0.80], "seconds": len.seconds(), "track": 2, "time": at.0}),
+            json!({"text": c.title, "size": (unit * 0.065).round(), "font": "Inter", "fontStyle": "Bold", "position": [w / 2.0, h * 0.80], "seconds": len.seconds(), "track": 2, "time": at.0}),
         ) {
             title_clips.push(v);
         }
@@ -807,7 +809,7 @@ fn build(
         if let Some(v) = soft(
             s,
             "graphics.newText",
-            json!({"text": outro, "size": (h * 0.06).round(), "font": "Inter", "fontStyle": "Bold", "position": [w / 2.0, h * 0.5], "seconds": outro_len.seconds(), "track": 2, "time": at.0}),
+            json!({"text": outro, "size": (unit * 0.06).round(), "font": "Inter", "fontStyle": "Bold", "position": [w / 2.0, h * 0.5], "seconds": outro_len.seconds(), "track": 2, "time": at.0}),
         ) {
             title_clips.push(v);
         }
