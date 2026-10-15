@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (new file: every file type Premiere Pro 26.5.2 reads or writes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (HEIF / HEIC and AVIF stills import) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -58,7 +58,7 @@ only). "Tested" names the evidence.
 | **OpenEXR** | read + write | stills and sequences: scan-line, none / RLE / ZIPS / ZIP / PXR24, half / float / uint, RGB(A) or Y, kept as linear float (#828); no PIZ, B44, DWA, tiled, multi-part or deep | sequences (half float, linear RGB / premultiplied RGBA; uncompressed, RLE, ZIPS or ZIP; #806, #874) | 70% |
 | **DPX** | read + write | yes: luma / RGB / RGBA, 8–16-bit, filled 10/12-bit, either byte order (#821); packed 10/12-bit, Y'CbCr 4:2:2 / 4:4:4 with or without alpha (#841); no RLE | sequences (10-bit RGB, BT.709; #779) | 90% |
 | Targa | read + write | yes: every image type, RLE, colour maps, 15–32-bit (#821) | sequences (24-bit, 32-bit with alpha; #779) | 95% |
-| HEIF / HEIC | read | no | — | 0% |
+| HEIF / HEIC | read | yes: HEVC (Main / Main 10, 4:2:0) images and tile grids, `iden`, the base image of a `tmap` gain-map image, `clap` / `irot` / `imir`, colour from `nclx`, the VUI or the MIAF defaults, Display P3 / BT.2020 ICC profiles converted to BT.709, alpha planes, Exif without decoding; AVIF (AV1 Main, monochrome alpha) the same way; image sequences of stills; 27 iPhone photos within 53–55 dB of libheif. No HEIF image sequences (tracks), overlays (`iovl`), 4:2:2 / 4:4:4 / monochrome HEVC | — | 85% |
 | **Radiance HDR** | read | yes: RGBE, flat, old and new run-length scan lines, every axis order, kept as linear float (#1407); no XYZE, EXPOSURE / PRIMARIES lines ignored | — | 70% |
 | AI / EPS, ICO, PTL | read | no | — | 0% |
 
@@ -93,3 +93,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
+| 2026-10-15 | minor | HEIF / HEIC and AVIF stills read |
