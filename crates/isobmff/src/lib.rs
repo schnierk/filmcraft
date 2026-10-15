@@ -5,6 +5,8 @@
 //!   [`Mp4File::read_sample`].
 //! - **Mux:** [`Mp4Writer`] writes progressive MP4/MOV (optionally faststart);
 //!   [`FragmentedWriter`] writes fragmented MP4.
+//! - **HEIF / AVIF stills:** [`heif::parse`] reads the `meta` box of an image file (items, their
+//!   locations, references and properties); decoding is in `filmcraft-codecs`.
 //!
 //! See the crate README for supported boxes and limitations.
 
@@ -14,6 +16,7 @@ mod bytes;
 mod codec;
 mod demux;
 mod error;
+pub mod heif;
 mod mux;
 mod source;
 

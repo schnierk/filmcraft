@@ -118,6 +118,41 @@ let bytes = w.finish_faststart()?.into_inner(); // or finish() for moov-at-end
   `flush_fragment()` then writes `moof` (`mfhd`, `traf` with default-base-is-moof `tfhd`, `tfdt` v1,
   `trun` with per-sample duration, size, flags and composition offset) followed by `mdat`.
 
+## HEIF / AVIF stills (`heif`)
+
+`heif::parse` reads the `meta` box of a HEIF (ISO/IEC 23008-12, 2nd edition 2022), MIAF
+(ISO/IEC 23000-22) or AVIF (AV1 Image File Format v1.1.0) file; the item and box syntax is
+ISO/IEC 14496-12. Decoding the images is `filmcraft-codecs`' job (`heif`).
+
+```rust
+use filmcraft_isobmff::heif::{self, ImageGrid, Property};
+
+let file = heif::parse(&bytes[..])?;                    // any ByteSource: top-level headers, ftyp, meta
+let primary = file.primary_item.unwrap();               // pitm
+let tiles = file.references_from(primary, b"dimg");     // a grid's tiles, row by row
+let grid = ImageGrid::parse(&file.read_item(&bytes[..], primary, 64)?)?;
+let rotation = file.find_property(primary, |p| if let Property::Rotation(r) = p { Some(*r) } else { None });
+```
+
+- `heif::sniff` / `file_type`: an `ftyp` naming `heic`, `heix`, `heim`, `heis`, `hevc`, `hevx`,
+  `mif1`, `mif2`, `msf1`, `avif` or `avis` as its major or a compatible brand.
+- `HeifFile`: brands, `handler` (`pict`), `primary_item`, `items` (`infe` v0–v3: id, type, name,
+  MIME type, hidden, protection), `properties` (`ipco` in order), `references` (`iref` v0/v1, 16- or
+  32-bit ids: `dimg`, `thmb`, `auxl`, `cdsc`, `prem`…), the `idat` payload, and whether the file also
+  has a `moov` (an image sequence). `item`, `item_properties` / `find_property` (`ipma` v0/v1, 7- or
+  15-bit indices, essential flags), `references_from` / `references_to`.
+- `read_item` assembles an item from its `iloc` extents (v0–v2; offset, length, base-offset and
+  index fields of 0–8 bytes; construction method 0 = file, 1 = `idat`; a zero length runs to the end).
+  Construction method 2 and data in other files are `Error::Unsupported`.
+- `Property`: `hvcC` (`HevcConfig`), `av1C` (`Av1Config`), `ispe`, `irot` (anti-clockwise quarter
+  turns), `imir` (`Mirror::TopBottom` for mode 0, `LeftRight` for mode 1, as the 2022 edition words it),
+  `clap` (`CleanAperture`), `colr` (`nclx` or an ICC profile), `pixi`, `auxC`; anything else, or a
+  known box that does not parse, is `Other { kind, malformed }`.
+- `ImageGrid::parse` (the `grid` item payload, 16- or 32-bit output size) and `exif_tiff` (the TIFF
+  header inside an `Exif` item).
+- Limits: the `meta` box is read up to 64 MiB, at most 2¹⁸ items and 2²⁰ extents; every count is
+  checked against the bytes of its box before anything is allocated.
+
 ## Tests
 - Unit tests cover the box reader and hand-built `stbl` edge cases (stz2, co64, ctts v1, empty edits,
   64-bit and size-0 boxes, uuid/wide/skip), codec config round-trips, and allocation guards.
@@ -134,6 +169,11 @@ let bytes = w.finish_faststart()?.into_inner(); // or finish() for moov-at-end
   and that timecode, the AAC priming edit, ipcm and fMP4 output are correct.
 - Mutation fuzzing (`tests/fuzz.rs`) uses a deterministic seed to mutate and truncate synthetic and
   ffmpeg files, and checks that nothing panics.
+- HEIF (`src/heif/tests.rs`): files built by the test writer `filmcraft_testkit::heif` with every
+  `iloc` version and field size, `idat` and multi-extent items, wide ids (`infe` v3, `pitm` v1,
+  `iref` / `ipma` v1, 15-bit property indices), damaged and unknown properties, QuickTime-style
+  `meta`; hostile input: counts larger than their boxes, extent and item bombs, offsets past the end,
+  truncation at every byte and 6000 seeded mutations under `catch_unwind`.
 
 ## Limitations / not yet supported
 - `presentation time = pts + edit_offset` only applies the leading empty edits and the first media

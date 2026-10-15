@@ -3,6 +3,14 @@
 Media sources, still-image and image-sequence import, generated media, audio streams, and decoded
 frame caching for FilmCraft.
 
+## Stills
+
+`STILL_EXTENSIONS` lists what the import dialogs and the Media Browser offer: PNG, JPEG, GIF, WebP,
+TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR and DNG are decoded here; HEIF / HEIC (`.heic`,
+`.heif`, `.hif`) and AVIF (`.avif`) by `filmcraft-codecs` (`heif`), which hands the picture to
+`StillSource::from_rgba` (`with_codec` names it "HEIC" or "AVIF"). Image sequences of those take
+the codecs' still decoders through `ImageSequenceSource::with_decoders` (`still::StillDecoder`).
+
 ## Image-sequence filenames
 
 `sequence::Numbered` identifies the last run of 1–18 ASCII frame-number digits in a filename's

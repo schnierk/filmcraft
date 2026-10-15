@@ -1112,7 +1112,7 @@ fn parse_btrt(p: &[u8]) -> Result<BitRate> {
     Ok(BitRate { buffer_size: c.u32()?, max_bitrate: c.u32()?, avg_bitrate: c.u32()? })
 }
 
-fn parse_colr(p: &[u8]) -> Result<ColorInfo> {
+pub(crate) fn parse_colr(p: &[u8]) -> Result<ColorInfo> {
     let mut c = Cur::new(p, "colr");
     let kind = c.fourcc()?;
     Ok(match &kind.0 {

@@ -17,6 +17,8 @@
 //!   MP3 / MP2 and AC-3 audio.
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
 //! - [`Y4mSource`]: uncompressed YUV4MPEG2 (`.y4m`) video, frames read on demand.
+//! - [`heif`]: HEIF / HEIC (iPhone photos) and AVIF stills, decoded with our HEVC and AV1 decoders;
+//!   [`heif::info`] reads their size, transforms and Exif metadata without decoding.
 //! - [`openers`]: the openers to register with the engine's media pool.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -25,6 +27,7 @@ pub mod apv;
 pub mod audio;
 pub mod avi;
 pub mod gop;
+pub mod heif;
 pub mod hw;
 mod hw_frame;
 pub mod mkv;
@@ -130,16 +133,24 @@ pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<
     Err(CodecError::Unsupported(format!("no decoder for {} video", entry.codec.name())))
 }
 
-/// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
-/// MPEG-1/2 video elementary streams, APV raw bitstreams, YUV4MPEG2, standalone audio).
+/// Openers for the engine's media pool (HEIF / AVIF stills, MP4/MOV, Matroska/WebM, MXF, Ogg
+/// Opus/Vorbis, MPEG TS/PS and MPEG-1/2 video elementary streams, APV raw bitstreams, YUV4MPEG2,
+/// standalone audio). HEIF comes before MP4: both start with an `ftyp` box.
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener]
+    vec![heif::opener, mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener]
+}
+
+/// Still decoders for formats `filmcraft-media` cannot decode itself (HEIF / AVIF), for image
+/// sequences (`ImageSequenceSource::with_decoders`).
+pub fn still_decoders() -> Vec<filmcraft_media::still::StillDecoder> {
+    vec![heif::decode_still]
 }
 
 fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
     static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::ReaderOpener>>> = std::sync::OnceLock::new();
     R.get_or_init(|| {
         RwLock::new(vec![
+            heif::reader_opener,
             mp4::reader_opener,
             mkv::reader_opener,
             mxf::reader_opener,
@@ -198,7 +209,7 @@ impl filmcraft_matroska::ByteSource for Src {
     }
 }
 
-/// Convenience: an `Arc` media source from bytes (tries MP4/MOV then audio files).
+/// Convenience: an `Arc` media source from bytes (tries [`openers`], then WAV and stills).
 pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft_media::SharedSource, filmcraft_media::MediaError> {
     filmcraft_media::open_bytes(name, bytes, &openers())
 }
