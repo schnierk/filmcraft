@@ -177,6 +177,26 @@ fn run_without_matching_media_reports_it_and_changes_nothing() {
 }
 
 #[test]
+fn backgrounds_shrink_by_averaging_whole_blocks() {
+    use super::run::shrink;
+    // 5 × 3 pixels, longer side to 2: blocks of 3 (the last column and row are smaller)
+    let px: Vec<u8> = (0..15u8).flat_map(|i| [i * 10, 0, 255 - i * 10, 255]).collect();
+    let (out, w, h) = shrink(&px, 5, 3, 2).unwrap();
+    assert_eq!((w, h), (2, 1));
+    // first block: pixels 0, 1, 2, 5, 6, 7, 10, 11, 12 → red average 60
+    assert_eq!(&out[0..4], &[60, 0, 195, 255]);
+    // second block: pixels 3, 4, 8, 9, 13, 14 → red average 85
+    assert_eq!(&out[4..8], &[85, 0, 170, 255]);
+    // already small enough, or a buffer that does not match its size
+    assert_eq!(shrink(&px, 5, 3, 480).unwrap(), (px.clone(), 5, 3));
+    assert!(shrink(&px, 6, 3, 2).is_none());
+    // a 4000 × 3000 photo comes out at 480 × 360 or less
+    let big = vec![128u8; 4000 * 3000 * 4];
+    let (_, w, h) = shrink(&big, 4000, 3000, 480).unwrap();
+    assert!(w <= 480 && h <= 480 && w >= 440, "{w}×{h}");
+}
+
+#[test]
 fn helpers() {
     assert_eq!(folder_title("2026-09 Mykonos"), "Mykonos");
     assert_eq!(folder_title("05_sommer"), "Sommer");
