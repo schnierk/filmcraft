@@ -17,7 +17,7 @@ optional).
 |---|---|---|
 | `regie.plan` | `{"request": str, "language"?: "de"\|"en"}` | `Plan`: kind, aspect, size, rate, length, date range, places, mood, title, music, folders, what was understood, open questions |
 | `media.captureInfo` | `{"path": str}` or `{"item": id}` | `{"created", "location", "width", "height", "seconds"}` from MP4/MOV metadata and JPEG EXIF |
-| `regie.findMedia` | `{"folders": [str]?, "from"?, "to"?, "places"?: [str], "kinds"?: ["video","photo","audio"], "limit"?: n}` | `{"candidates": [Candidate], "scanned": n, "skipped": n}` |
+| `regie.findMedia` | `{"folders": [str]?, "from"?, "to"?, "places"?: [str], "kinds"?: ["video","photo","audio"], "limit"?: n, "screenshots"?: bool}` | `{"candidates": [Candidate], "scanned": n, "skipped": n, "screenshots": n}`; screenshots and screen recordings ("Screenshot…", "Bildschirmfoto…", "Screen Recording…") are left out and counted unless `screenshots` is true |
 | `media.highlights` | `{"item": id, "segmentSeconds"?: 3, "maxSegments"?: 4, "step"?: 0.5}` | `Highlights`: best segments with scores and reasons, score curve |
 | `audio.beats` | `{"item": id}` | `Beats`: bpm, beats, bars, energy per beat, calm/lively sections |
 | `regie.assemble` | `{"plan": Plan, "media": [Candidate + "highlights"?], "music"?: {"item": id, "beats"?: Beats}}` | `{"sequence": id, "clips": n, "seconds", "chapters": [...], "summary": [str]}` |
@@ -26,11 +26,15 @@ optional).
 
 ## How the film is built (recipe "recap")
 
-- Chapters: media grouped by capture date (a gap of more than two days starts a new chapter),
-  named after the place or folder and the month ("Mykonos · September").
+- Chapters: media grouped by capture time and place. A new chapter starts when the place (or
+  the folder) changes after more than six hours, or after any gap of more than seven days. Each
+  is named after its place or folder and the months that hold at least a tenth of its media
+  ("Mykonos · September").
 - Order: chapters by date, photos and clips by capture time inside a chapter.
-- Cuts land on the music's beats: a bar per photo or shot in calm sections, half a bar in lively
-  ones. Each video uses its best segment (`media.highlights`).
+- Cuts land on the music's beats: two short shots (two beats each in lively sections), then a
+  longer one of four beats; photos get four beats. Each video uses its best segment
+  (`media.highlights`). A film much shorter than the music starts the music at its liveliest
+  stretch, on a bar.
 - Portrait media in a landscape film (and the other way round) sit on a blurred, darkened copy of
   themselves; photos move slowly (Ken Burns).
 - Titles: the film title at the start, a chapter title on each chapter's first shot, a closing
