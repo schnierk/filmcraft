@@ -53,6 +53,15 @@ pub use mask::GpuMask;
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// The most recent uploads a compositor keeps between frames (enough for several stacked layers
+/// and playback lookahead).
+const UPLOAD_CACHE_ENTRIES: usize = 24;
+
+/// The most texture memory a compositor's kept uploads may hold: a count alone let 24 stills of
+/// 48 megapixels (4.6 GB) pile up in each of an export's renderers. The frame being drawn keeps
+/// its own uploads whatever their size ([`GpuCompositor::set_upload_budget`] changes it).
+pub const UPLOAD_CACHE_BYTES: u64 = 1 << 30;
+
 struct Uploaded {
     /// Y, Cb, Cr (or the RGBA texture) and the alpha plane (the dummy texture when there is none).
     views: [wgpu::TextureView; 4],
@@ -62,6 +71,8 @@ struct Uploaded {
     alpha_scale: f32,
     chroma: (u32, u32),
     last_used: u64,
+    /// Bytes its textures hold.
+    bytes: u64,
     /// The uploaded pixel buffers, kept alive while cached: the cache key is the buffer address,
     /// and a freed buffer's address can be reused by a different frame (stale texture).
     _pixels: PixelData,
@@ -84,6 +95,11 @@ pub struct GpuCompositor {
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
+    /// Bytes the kept uploads hold, and the most they may hold.
+    upload_bytes: u64,
+    upload_budget: u64,
+    /// The clock at the first upload of the layers being drawn: uploads used since are kept.
+    frame_first_use: u64,
     dummy: wgpu::TextureView,
     /// The effect stage (None on devices without compute shaders or storage textures: layers
     /// with effects are then rendered on the CPU here).
@@ -420,6 +436,9 @@ impl GpuCompositor {
             accum_readback_buf: None,
             uploads: HashMap::new(),
             clock: 0,
+            upload_bytes: 0,
+            upload_budget: UPLOAD_CACHE_BYTES,
+            frame_first_use: 0,
             dummy,
             fx,
             transition: transition::PushStage::new(device),
@@ -494,7 +513,8 @@ impl GpuCompositor {
         let (w, h) = (f.width, f.height);
         let d0 = self.dummy.clone();
         let dummy = || d0.clone();
-        let up = match &f.data {
+        let before = self.uploaded_bytes;
+        let mut up = match &f.data {
             PixelData::Rgba8(d) => {
                 let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba8UnormSrgb, d, 4);
                 Uploaded {
@@ -504,6 +524,7 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
+                    bytes: 0,
                     _pixels: f.data.clone(),
                 }
             }
@@ -524,6 +545,7 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
+                    bytes: 0,
                     _pixels: f.data.clone(),
                 }
             }
@@ -542,6 +564,7 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
+                    bytes: 0,
                     _pixels: f.data.clone(),
                 }
             }
@@ -571,20 +594,48 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
+                    bytes: 0,
                     _pixels: f.data.clone(),
                 }
             }
         };
+        up.bytes = self.uploaded_bytes.saturating_sub(before);
+        self.upload_bytes = self.upload_bytes.saturating_add(up.bytes);
         self.uploads.insert(key, up);
-        // keep the most recent uploads (enough for several stacked layers + playback lookahead)
-        if self.uploads.len() > 24 {
-            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
-            v.sort_unstable();
-            for (_, k) in v.into_iter().take(self.uploads.len() - 24) {
-                self.uploads.remove(&k);
+        self.evict_uploads();
+        key
+    }
+
+    /// Drop the least recently used uploads while more than [`UPLOAD_CACHE_ENTRIES`] are kept or
+    /// they hold more than the budget. Not those of the layers being drawn: their bind groups are
+    /// made once all of them are uploaded, and a dropped one would draw as transparent.
+    fn evict_uploads(&mut self) {
+        let over = |c: &Self| c.uploads.len() > UPLOAD_CACHE_ENTRIES || c.upload_bytes > c.upload_budget;
+        if !over(self) {
+            return;
+        }
+        let mut v: Vec<(u64, (usize, u32, u32))> =
+            self.uploads.iter().filter(|(_, u)| u.last_used < self.frame_first_use).map(|(k, u)| (u.last_used, *k)).collect();
+        v.sort_unstable();
+        for (_, k) in v {
+            if !over(self) {
+                break;
+            }
+            if let Some(u) = self.uploads.remove(&k) {
+                self.upload_bytes = self.upload_bytes.saturating_sub(u.bytes);
             }
         }
-        key
+    }
+
+    /// The most texture memory kept uploads may hold between frames (default
+    /// [`UPLOAD_CACHE_BYTES`]); older uploads beyond it are dropped at the next upload.
+    pub fn set_upload_budget(&mut self, bytes: u64) {
+        self.upload_budget = bytes;
+    }
+
+    /// Bytes the kept uploads hold on the GPU.
+    pub fn upload_cache_bytes(&self) -> u64 {
+        self.upload_bytes
     }
 
     /// The source description of an uploaded frame.
@@ -755,6 +806,7 @@ impl GpuCompositor {
             .collect();
         let resolved: Vec<&PlanLayer> = layers.iter().zip(&cpu_fx).map(|(l, c)| c.as_ref().unwrap_or(l)).collect();
         let layers = resolved;
+        self.frame_first_use = self.clock.saturating_add(1);
         let keys: Vec<(usize, u32, u32)> = layers
             .iter()
             .enumerate()

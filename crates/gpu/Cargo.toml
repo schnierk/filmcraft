@@ -22,7 +22,9 @@ filmcraft-geom = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
-wgpu = { version = "30", default-features = false, features = ["wgsl"] }
+# `std`: error scopes are per thread (`ExportRenderer` draws each frame inside its own; without
+# `std` every thread shares one stack, and an export draws on several threads at once).
+wgpu = { version = "30", default-features = false, features = ["wgsl", "std"] }
 log = { workspace = true }
 pollster = "0.4"
 rayon = { workspace = true }

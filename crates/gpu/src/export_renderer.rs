@@ -26,6 +26,7 @@ pub mod timing {
     static MAP_WAIT_NS: AtomicU64 = AtomicU64::new(0);
     static CONVERT_NS: AtomicU64 = AtomicU64::new(0);
     static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static OUT_OF_MEMORY: AtomicU64 = AtomicU64::new(0);
 
     /// Totals since the last [`reset`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub mod timing {
         pub convert: Duration,
         /// Frames composited by the GPU.
         pub frames: u64,
+        /// Frames sent to the CPU because the GPU ran out of memory drawing them.
+        pub out_of_memory: u64,
     }
 
     fn add(counter: &AtomicU64, d: Duration) {
@@ -60,21 +63,32 @@ pub mod timing {
         FRAMES.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn add_out_of_memory() {
+        OUT_OF_MEMORY.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn get() -> GpuTimings {
         let d = |c: &AtomicU64| Duration::from_nanos(c.load(Ordering::Relaxed));
-        GpuTimings { submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
+        GpuTimings {
+            submit: d(&SUBMIT_NS),
+            map_wait: d(&MAP_WAIT_NS),
+            convert: d(&CONVERT_NS),
+            frames: FRAMES.load(Ordering::Relaxed),
+            out_of_memory: OUT_OF_MEMORY.load(Ordering::Relaxed),
+        }
     }
 
     pub fn reset() {
-        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
+        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES, &OUT_OF_MEMORY] {
             c.store(0, Ordering::Relaxed);
         }
     }
 }
 
-/// Set once the shared export device reported an uncaptured error (validation, out of memory)
-/// or was lost: every export renders on the CPU from then on. The device is shared by every
-/// renderer and lives in a `OnceLock`, so it is not recreated in this process.
+/// Set once the shared export device reported an error outside a frame's error scopes or a
+/// validation error, or was lost: every export renders on the CPU from then on. The device is
+/// shared by every renderer and lives in a `OnceLock`, so it is not recreated in this process.
+/// Running out of memory while drawing a frame does not set it ([`ExportRenderer::render`]).
 static DEVICE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Retire the shared export device, logging the first reason only.
@@ -88,13 +102,18 @@ fn device_failed() -> bool {
     DEVICE_FAILED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The least of recent uploads an export renderer's compositor keeps once the GPU has run out of
+/// memory on it.
+const MIN_UPLOAD_BUDGET: u64 = 128 << 20;
+
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     device: wgpu::Device,
-    #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
     queue: wgpu::Queue,
     compositor: GpuCompositor,
+    /// Its compositor's upload budget: [`crate::UPLOAD_CACHE_BYTES`], halved each time the GPU
+    /// runs out of memory on this renderer (down to [`MIN_UPLOAD_BUDGET`]).
+    upload_budget: u64,
 }
 
 /// The off-screen device every export renderer shares, and a name for its adapter.
@@ -172,7 +191,7 @@ impl ExportRenderer {
     pub fn try_new() -> Result<Self, String> {
         let SharedDevice { instance, device, queue, .. } = shared_device()?;
         let compositor = GpuCompositor::new(&device, &queue);
-        Ok(Self { _instance: instance, device, queue, compositor })
+        Ok(Self { _instance: instance, device, queue, compositor, upload_budget: crate::UPLOAD_CACHE_BYTES })
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
@@ -190,7 +209,7 @@ impl ExportRenderer {
                 if device_failed() {
                     return None;
                 }
-                let (w, h, px) = self.compositor.render_export_prepared(&frame.plan, frame.prep.as_ref())?;
+                let (w, h, px) = self.draw(|c| c.render_export_prepared(&frame.plan, frame.prep.as_ref()))?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
                     return None;
@@ -201,6 +220,37 @@ impl ExportRenderer {
             // Transitions: the export path leaves them to the CPU reference renderer.
             FramePlan::Composite { .. } => None,
         }
+    }
+
+    /// Run `f` on the compositor, catching the errors it causes on this thread. Running out of
+    /// GPU memory (other programs hold most of it, or the frame's sources do not fit) sends this
+    /// frame to the CPU and starts a fresh compositor, which lets go of every texture and buffer
+    /// the old one held (one of them may be the failed allocation) and keeps half as many bytes
+    /// of recent uploads; the next frame tries the GPU again. Validation errors still retire the
+    /// device: they mean a bug, not a full GPU.
+    fn draw<R>(&mut self, f: impl FnOnce(&mut GpuCompositor) -> Option<R>) -> Option<R> {
+        // error scopes are per thread (wgpu's `std` feature), and a renderer draws on the thread
+        // that calls it
+        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let invalid = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let out = f(&mut self.compositor);
+        let invalid = pollster::block_on(invalid.pop());
+        if let Some(e) = pollster::block_on(oom.pop()) {
+            self.upload_budget = (self.upload_budget / 2).max(MIN_UPLOAD_BUDGET);
+            log::warn!(
+                "GPU export ran out of memory; this frame renders on the CPU and the renderer starts afresh, keeping {} MiB of uploads ({e})",
+                self.upload_budget >> 20
+            );
+            timing::add_out_of_memory();
+            self.compositor = GpuCompositor::new(&self.device, &self.queue);
+            self.compositor.set_upload_budget(self.upload_budget);
+            return None;
+        }
+        if let Some(e) = invalid {
+            mark_device_failed(&format!("GPU error: {e}"));
+            return None;
+        }
+        out
     }
 }
 

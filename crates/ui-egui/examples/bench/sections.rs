@@ -537,6 +537,9 @@ pub fn export(o: &Opts) -> Vec<Value> {
                     gpu_timings.convert.as_secs_f64() * 1000.0 / f,
                 );
             }
+            if gpu_timings.out_of_memory > 0 {
+                eprintln!("  [GPU out of memory for {id}] {} frames rendered on the CPU instead", gpu_timings.out_of_memory);
+            }
             runs.push(dt);
             cpu.push(ms(cpu_now() - c0) / frames.max(1) as f64);
             bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
