@@ -396,6 +396,14 @@ fn chapters(media: &[Medium], order: &[usize], language: &str) -> Vec<Chapter> {
             c.title = std::mem::take(&mut c.subtitle);
         }
     }
+    // Every chapter with the same name (one folder without place names, such as a phone's camera
+    // roll or "original"): the name tells them apart from nothing, so their months name them.
+    let same = out.len() > 1 && out.windows(2).all(|w| w.first().map(|c| &c.title) == w.get(1).map(|c| &c.title));
+    if same && out.iter().all(|c| !c.subtitle.is_empty()) {
+        for c in &mut out {
+            c.title = std::mem::take(&mut c.subtitle);
+        }
+    }
     out
 }
 
@@ -744,6 +752,8 @@ fn default_title(plan: &Plan, chs: &[Chapter], media: &[Medium]) -> String {
             }
         }
         (_, _) => match chs.first() {
+            // (a chapter named by its month has its year already)
+            Some(c) if !c.title.is_empty() && !year.is_empty() && c.title.ends_with(year.trim()) => c.title.clone(),
             Some(c) if !c.title.is_empty() => format!("{}{year}", c.title),
             _ => {
                 if de {

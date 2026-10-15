@@ -208,6 +208,34 @@ fn the_closing_title_is_not_lost_to_a_late_chapter_name() {
 }
 
 #[test]
+fn chapters_of_one_nameless_folder_are_named_by_their_months() {
+    let (_dir, files) = footage("regie-months");
+    let mut s = Session::default();
+    let paths: Vec<String> = files.iter().map(|f| f.0.to_string_lossy().into_owned()).collect();
+    let item = s.execute("file.import", json!({"paths": paths})).unwrap()["items"][0].as_u64().unwrap();
+    let still = |k: usize, created: &str| Medium {
+        candidate: Candidate {
+            path: format!("/phone/original/IMG_{k}.heic"),
+            kind: "photo".into(),
+            created: Some(created.into()),
+            width: 320,
+            height: 180,
+            folder: "original".into(),
+            item: Some(item),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let media = vec![still(1, "2026-02-16T19:56:00+01:00"), still(2, "2026-02-17T10:00:00+01:00"), still(3, "2026-04-18T15:32:00+02:00")];
+    let v = assemble(&mut s, &Plan { kind: "slideshow".into(), ..plan("de") }, &media, None).unwrap();
+    let titles: Vec<&str> = v["chapters"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["Februar 2026", "April 2026"], "{v}");
+    assert!(v["chapters"].as_array().unwrap().iter().all(|c| c["subtitle"] == ""), "{v}");
+    // and the film is not called "Februar 2026 2026"
+    assert_eq!(v["title"], "Februar 2026");
+}
+
+#[test]
 fn run_without_matching_media_reports_it_and_changes_nothing() {
     let dir = tmp_dir("regie-empty");
     let mut s = Session::default();
