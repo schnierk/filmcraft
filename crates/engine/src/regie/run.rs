@@ -31,7 +31,7 @@ pub struct Analysis {
     /// Music file and its beats.
     pub music: Option<(String, Option<Beats>)>,
     pub scanned: u64,
-    /// Photos and videos in formats FilmCraft cannot import (HEIC, …) and unreadable files.
+    /// Photos and videos in formats FilmCraft cannot import (camera raw, …) and unreadable files.
     pub skipped: u64,
     /// Screenshots and screen recordings left out.
     pub screenshots: u64,
@@ -451,9 +451,9 @@ fn finish(s: &mut Session, a: Analysis) -> Result<Value> {
         if let Some(sum) = v.get_mut("summary").and_then(Value::as_array_mut) {
             if a.skipped > 0 {
                 sum.push(json!(if de {
-                    format!("{} Dateien konnte ich nicht verwenden (z. B. HEIC-Fotos vom iPhone: in den Fotos-Einstellungen „Maximale Kompatibilität“ wählen oder als JPEG exportieren).", a.skipped)
+                    format!("{} Dateien konnte ich nicht verwenden (z. B. RAW-Fotos der Kamera außer DNG, oder WMV-Videos).", a.skipped)
                 } else {
-                    format!("{} files could not be used (for example HEIC photos from an iPhone: choose “Most Compatible” in the camera settings or export them as JPEG).", a.skipped)
+                    format!("{} files could not be used (for example camera raw photos other than DNG, or WMV videos).", a.skipped)
                 }));
             }
             if let Some(t) = screenshots_left_out(a.screenshots, de) {

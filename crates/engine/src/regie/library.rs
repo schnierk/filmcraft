@@ -65,8 +65,8 @@ const MAX_UNIX: u64 = 253_402_300_799;
 /// Photo and video formats FilmCraft does not import. Files of these kinds are counted as
 /// skipped, so a search can say that some media could not be used.
 const UNSUPPORTED: &[&str] = &[
-    "heic", "heif", "hif", "avif", "jxl", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "x3f", "3fr", "iiq",
-    "erf", "kdc", "dcr", "mrw", "wmv", "asf", "flv", "f4v", "3g2", "ogv", "rm", "rmvb", "divx", "wma", "amr", "ape", "wv",
+    "jxl", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "x3f", "3fr", "iiq", "erf", "kdc", "dcr", "mrw", "wmv",
+    "asf", "flv", "f4v", "3g2", "ogv", "rm", "rmvb", "divx", "wma", "amr", "ape", "wv",
 ];
 
 /// How screenshots and screen recordings are named by default (desktop, phone and macOS tools, in
@@ -214,6 +214,9 @@ fn sniff(h: &[u8], ext: &str) -> Format {
         Format::Still(StillFormat::Dpx)
     } else if h.starts_with(b"fLaC") || (h.starts_with(b"ID3") && ext == "flac") {
         Format::Flac
+    } else if filmcraft_isobmff::heif::sniff(h) {
+        // HEIF images start with an `ftyp` too
+        Format::Still(StillFormat::Heif)
     } else if matches!(at(4, 8), b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip" | b"pnot") {
         Format::Mp4
     } else if h.starts_with(b"BM") && ext == "bmp" {
@@ -669,8 +672,8 @@ pub struct FindResult {
     /// Files looked at: every visible file in the searched folders, media or not (the search
     /// stops at [`MAX_FILES`]).
     pub scanned: u64,
-    /// What was left out unseen: photos and videos in formats FilmCraft does not import (HEIC,
-    /// camera raw other than DNG, WMV…), files and folders that could not be read, links to
+    /// What was left out unseen: photos and videos in formats FilmCraft does not import (camera
+    /// raw other than DNG, JPEG XL, WMV…), files and folders that could not be read, links to
     /// folders, folders nested deeper than [`MAX_DEPTH`].
     pub skipped: u64,
     /// How many media matched the filter before the limit cut the list.

@@ -351,6 +351,7 @@ fn stills_and_sounds_give_size_date_and_length() {
         StillFormat::Bmp => "bmp",
         StillFormat::Tga => "tga",
         StillFormat::Dpx => "dpx",
+        StillFormat::Heif => "heic",
     };
     for (bytes, f, w, h) in stills() {
         let info = info_of(&bytes, ext(f));
@@ -536,7 +537,7 @@ fn ffmpeg_movies_with_apple_and_android_metadata() {
 /// Kreta/beach.png             no date; modified 2025-07-10
 /// Kreta/song.wav              1 s; modified 2026-01-01
 /// Kreta/.hidden.jpg           hidden
-/// Kreta/photo.HEIC            not importable: skipped
+/// Kreta/photo.CR3             camera raw, not importable: skipped
 /// .thumbnails/x.jpg, @eaDir/thumb.jpg   hidden / NAS thumbnails
 /// notes.txt                   no media
 /// a/b/c/d/e/f/g/h/ok.jpg      8 folders deep: found; modified 2020-01-01
@@ -551,7 +552,7 @@ fn holiday_tree(name: &str) -> PathBuf {
     write(&root.join("Kreta/song.wav"), &wav_1s());
     touch(&root.join("Kreta/song.wav"), "2026-01-01T00:00:00Z");
     write(&root.join("Kreta/.hidden.jpg"), &jpeg(None, 10, 10));
-    write(&root.join("Kreta/photo.HEIC"), b"\0\0\0\x18ftypheic");
+    write(&root.join("Kreta/photo.CR3"), b"\0\0\0\x18ftypcrx ");
     write(&root.join(".thumbnails/x.jpg"), &jpeg(None, 10, 10));
     write(&root.join("@eaDir/thumb.jpg"), &jpeg(None, 10, 10));
     write(&root.join("notes.txt"), b"packing list");
@@ -616,6 +617,42 @@ fn find_media_by_date_place_and_kind() {
     let none = find(&root, MediaFilter { limit: 0, ..Default::default() });
     assert_eq!((none.candidates.len(), none.matched, none.scanned), (0, 5, 7));
     std::fs::remove_dir_all(root).ok();
+}
+
+/// An iPhone photo as HEIC: a 4032 × 3024 picture turned a quarter by `irot` (a portrait photo)
+/// with its EXIF in an `Exif` item.
+fn heic(exif: Option<&[u8]>) -> Vec<u8> {
+    use filmcraft_testkit::heif as w;
+    let mut h = w::Heif::new(b"heic");
+    let size = h.property(w::ispe(4032, 3024));
+    let turn = h.property(w::irot(3));
+    let config = h.property(w::hvcc(4, 1, 8, &[], &[], &[]));
+    h.item(w::Item::new(1, b"hvc1", vec![0; 64]).with(config, true).with(size, false).with(turn, true));
+    h.primary = Some(1);
+    if let Some(tiff) = exif {
+        h.item(w::Item::new(2, b"Exif", w::exif(tiff)).hidden());
+        h.reference(b"cdsc", 2, &[1]);
+    }
+    h.build()
+}
+
+#[test]
+fn an_iphone_heic_gives_date_place_and_upright_size() {
+    let root = tmp_dir("regie-heic");
+    write(&root.join("IMG_0001.HEIC"), &heic(Some(&phone_exif(true))));
+    write(&root.join("IMG_0002.heic"), &heic(None));
+    let i = capture_info(&root.join("IMG_0001.HEIC"));
+    assert_eq!((i.kind.as_str(), i.width, i.height), ("photo", 3024, 4032), "{i:?}");
+    // the import turns it by `irot`: the EXIF orientation (6) must not turn it again
+    assert_eq!(i.orientation, 0);
+    assert_eq!(i.created.as_deref(), Some("2026-09-05T18:22:00+03:00"));
+    assert!(near(i.location.unwrap(), PHONE_PLACE));
+    // without EXIF: size only
+    let j = capture_info(&root.join("IMG_0002.heic"));
+    assert_eq!((j.width, j.height, j.created.as_deref()), (3024, 4032, None));
+    // both are found as photos, not skipped
+    let r = find(&root, MediaFilter::default());
+    assert_eq!((names(&r), r.skipped), (vec!["IMG_0001.HEIC".to_string(), "IMG_0002.heic".to_string()], 0));
 }
 
 #[test]

@@ -75,6 +75,8 @@ pub(crate) enum StillFormat {
     Bmp,
     Tga,
     Dpx,
+    /// HEIF / HEIC / AVIF (iPhone photos).
+    Heif,
 }
 
 /// The headers of a still image of format `f`.
@@ -91,6 +93,7 @@ pub(crate) fn still<S: ByteSource + ?Sized>(src: &S, f: StillFormat) -> Still {
         StillFormat::Bmp => bmp(src),
         StillFormat::Tga => tga(src),
         StillFormat::Dpx => dpx(src),
+        StillFormat::Heif => heif(src),
     }
 }
 
@@ -366,6 +369,17 @@ pub(crate) fn read_exif<S: ByteSource + ?Sized>(src: &S, base: u64) -> Exif {
 }
 
 // ---------- still formats ----------
+
+/// HEIF / HEIC / AVIF (ISO/IEC 23008-12): the displayed size (after the clean aperture, rotation
+/// and mirror, which the import applies) and the EXIF data of the image's `Exif` item, read from
+/// the `meta` box and that item only. The EXIF orientation is left out: the file's own
+/// properties already turn the picture upright.
+fn heif<S: ByteSource + ?Sized>(src: &S) -> Still {
+    let Ok(info) = filmcraft_codecs::heif::info_from(src) else { return Still::default() };
+    let mut exif = info.exif.map(|tiff| read_exif(&tiff, 0)).unwrap_or_default();
+    exif.orientation = None;
+    Still { width: info.width, height: info.height, exif }
+}
 
 /// JPEG (ITU-T T.81 Annex B): the marker segments up to the first scan. The first `APP1` that
 /// starts with "Exif\0" holds the EXIF data; the first frame header (SOF0–SOF15 except DHT, JPG
