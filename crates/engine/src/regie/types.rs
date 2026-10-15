@@ -32,6 +32,8 @@ pub struct Plan {
     pub mood: String,
     /// The film's title; `None`: made from the content ("Mein Reisejahr 2026").
     pub title: Option<String>,
+    /// The new sequence's name; `None`: the title.
+    pub sequence_name: Option<String>,
     /// A music file to cut to; `None`: the first suitable audio file found, else no music.
     pub music: Option<String>,
     /// Which kinds of media to use.
@@ -61,6 +63,7 @@ impl Default for Plan {
             places: Vec::new(),
             mood: "upbeat".into(),
             title: None,
+            sequence_name: None,
             music: None,
             photos: true,
             videos: true,

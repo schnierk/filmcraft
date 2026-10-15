@@ -624,6 +624,7 @@ pub fn understand(request: &str, today: Date) -> Plan {
         places,
         mood: mood.into(),
         title,
+        sequence_name: None,
         music: if no_music { Some(String::new()) } else { music },
         photos: !videos_only,
         videos: !photos_only,

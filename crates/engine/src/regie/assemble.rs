@@ -1,4 +1,5 @@
-//! `regie.assemble`, `regie.run`, `regie.status`: build the film (see [the module overview](super)).
+//! `regie.assemble`, `regie.run`, `regie.status`, `regie.variant`: build the film (see [the module
+//! overview](super)).
 //!
 //! [`assemble`] turns a [`Plan`], the media (with their best segments) and the music's beat grid
 //! into a new sequence, using the same commands a person would (`timeline.place`,
@@ -50,6 +51,17 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             run: run_status,
             journal: false,
         },
+        CommandSpec {
+            id: "regie.variant",
+            label: "AI Director: Another Version",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"aspect":"9:16"|"1:1"|"4:5"|"16:9"="9:16","seconds":float=30}"#,
+            enabled: always,
+            run: run_variant,
+            // cut from what the last film was made of, which lives in the session, not the project
+            journal: false,
+        },
     ]
 }
 
@@ -60,6 +72,28 @@ pub struct RegieState {
     pub pending: Option<super::run::Pending>,
     /// The last finished film (the `regie.assemble` result) or error.
     pub last: Option<std::result::Result<Value, String>>,
+    /// What the last film was cut from, for `regie.variant`.
+    pub material: Option<Material>,
+}
+
+/// What a film was cut from: its plan (with the title it got), the media with their best moments,
+/// the music with its beats. `regie.variant` cuts another version from it without searching or
+/// analysing again.
+#[derive(Clone, Debug, Default)]
+pub struct Material {
+    pub plan: Plan,
+    pub media: Vec<Medium>,
+    pub music: Option<Music>,
+}
+
+impl Material {
+    /// The material of the film `built` (an `assemble` result) made from `plan`, `media` and
+    /// `music`: the plan keeps the title the film got, so another version shows the same one.
+    pub fn of(plan: &Plan, media: &[Medium], music: Option<&Music>, built: &Value) -> Self {
+        let title = built.get("title").and_then(Value::as_str).filter(|t| !t.trim().is_empty()).map(str::to_string);
+        let plan = Plan { title: title.or_else(|| plan.title.clone()), sequence_name: None, ..plan.clone() };
+        Material { plan, media: media.to_vec(), music: music.cloned() }
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -114,8 +148,89 @@ fn run_assemble(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| bad("regie.assemble", format!("`music`: {e}")))?),
     };
     let r = assemble(s, &plan, &media, music.as_ref());
+    if let Ok(v) = &r {
+        s.regie.material = Some(Material::of(&plan, &media, music.as_ref(), v));
+    }
     s.regie.last = Some(r.as_ref().map(Clone::clone).map_err(ToString::to_string));
     r
+}
+
+/// `regie.variant`: another version of the last film, cut from the same media, best moments and
+/// music without searching or analysing again. A 9:16 reel of 30 seconds unless `aspect` and
+/// `seconds` say otherwise (at most 1080 pixels on the short side); a new sequence named after the
+/// film and the shape, one undo step. Media removed from the project since are left out.
+fn run_variant(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "regie.variant";
+    if !(p.is_object() || p.is_null()) {
+        return Err(bad(CMD, "parameters must be an object: {\"aspect\": \"9:16\", \"seconds\": 30}"));
+    }
+    let aspect = match p.get("aspect") {
+        None | Some(Value::Null) => "9:16",
+        Some(v) => match v.as_str().map(str::trim) {
+            Some(a @ ("9:16" | "1:1" | "4:5" | "16:9")) => a,
+            _ => return Err(bad(CMD, format!("`aspect` must be \"9:16\", \"1:1\", \"4:5\" or \"16:9\", got {}", short_value(v)))),
+        },
+    };
+    let seconds = match p.get("seconds") {
+        None | Some(Value::Null) => 30.0,
+        Some(v) => v
+            .as_f64()
+            .filter(|x| x.is_finite() && (3.0..=MAX_FILM).contains(x))
+            .ok_or_else(|| bad(CMD, format!("`seconds` must be a length from 3 to {MAX_FILM} seconds, got {}", short_value(v))))?,
+    };
+    let Some(m) = s.regie.material.clone() else {
+        return Err(bad(CMD, "there is no film to make another version of yet: make one with the AI Director first (regie.run)"));
+    };
+    let alive = |id: u64| s.project.item(ItemId(id)).is_some();
+    let media: Vec<Medium> = m
+        .media
+        .into_iter()
+        .filter(|x| x.candidate.item.is_some_and(alive))
+        .map(|mut x| {
+            x.background_item = x.background_item.filter(|b| alive(*b));
+            x
+        })
+        .collect();
+    let music = m.music.filter(|x| alive(x.item));
+    let de = m.plan.language == "de";
+    let mut plan = m.plan;
+    let tier = plan.width.min(plan.height).min(1080);
+    (plan.width, plan.height) = super::plan::frame_size(aspect, tier);
+    plan.aspect = aspect.to_string();
+    plan.seconds = Some(seconds);
+    if aspect == "9:16" {
+        plan.kind = "reel".into();
+    }
+    let shape = match (aspect, de) {
+        ("9:16", true) => "Reel 9:16".to_string(),
+        ("9:16", false) => "reel 9:16".to_string(),
+        (a, _) => a.to_string(),
+    };
+    let title = plan.title.clone().unwrap_or_else(|| if de { "KI-Regie".into() } else { "AI Director".into() });
+    plan.sequence_name = Some(format!("{title} ({shape})"));
+    let mut v = assemble(s, &plan, &media, music.as_ref())?;
+    v["aspect"] = json!(aspect);
+    if let Some(sum) = v.get_mut("summary").and_then(Value::as_array_mut) {
+        let line = if de {
+            format!("Neue Fassung im Format {aspect} aus demselben Material, ohne neue Suche.")
+        } else {
+            format!("A new {aspect} version cut from the same material, without searching again.")
+        };
+        sum.insert(0, json!(line));
+    }
+    s.regie.last = Some(Ok(v.clone()));
+    Ok(v)
+}
+
+/// "1 chapter", "3 chapters": a count with the word's singular or plural.
+fn count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 { format!("1 {one}") } else { format!("{n} {many}") }
+}
+
+/// A parameter value for an error message, shortened.
+fn short_value(v: &Value) -> String {
+    let t = v.to_string();
+    if t.chars().count() > 60 { format!("{}…", t.chars().take(60).collect::<String>()) } else { t }
 }
 
 /// Longest film the recipe builds, seconds.
@@ -515,13 +630,14 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
     let mut summary = Vec::new();
     let mut explain = Vec::new();
     if de {
+        let whole = secs.round() as u64;
         summary.push(format!(
-            "„{title}“: {} Kapitel, {} Fotos und {} Videoausschnitte, {}:{:02} Minuten.",
-            chapter_list.len(),
-            photos,
-            videos,
-            secs as u64 / 60,
-            secs as u64 % 60
+            "„{title}“: {}, {} und {}, {}:{:02} Minuten.",
+            count(chapter_list.len(), "Kapitel", "Kapitel"),
+            count(photos, "Foto", "Fotos"),
+            count(videos, "Videoausschnitt", "Videoausschnitte"),
+            whole / 60,
+            whole % 60
         ));
         if music_item.is_some() {
             summary.push("Geschnitten auf den Takt der Musik; die Musik blendet am Ende aus.".into());
@@ -541,13 +657,14 @@ pub fn assemble_in(s: &mut Session, plan: &Plan, media: &[Medium], music: Option
         }
         explain.push("Alles ist ein einziger Schritt: Bearbeiten ▸ Rückgängig nimmt den ganzen Film zurück.".into());
     } else {
+        let whole = secs.round() as u64;
         summary.push(format!(
-            "“{title}”: {} chapters, {} photos and {} video shots, {}:{:02} minutes.",
-            chapter_list.len(),
-            photos,
-            videos,
-            secs as u64 / 60,
-            secs as u64 % 60
+            "“{title}”: {}, {} and {}, {}:{:02} minutes.",
+            count(chapter_list.len(), "chapter", "chapters"),
+            count(photos, "photo", "photos"),
+            count(videos, "video shot", "video shots"),
+            whole / 60,
+            whole % 60
         ));
         if music_item.is_some() {
             summary.push("Cut to the music's beat; the music fades out at the end.".into());
@@ -668,9 +785,10 @@ fn build(
     music_in: Tick,
 ) -> Result<(u64,)> {
     let de = plan.language == "de";
+    let name = plan.sequence_name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(title);
     let seq = s.execute(
         "file.newSequence",
-        json!({"name": title, "width": plan.width, "height": plan.height, "fps": plan.fps, "sampleRate": 48000, "video": 4, "audio": 2}),
+        json!({"name": name, "width": plan.width, "height": plan.height, "fps": plan.fps, "sampleRate": 48000, "video": 4, "audio": 2}),
     )?;
     let seq_id = seq.get("sequence").and_then(Value::as_u64).ok_or_else(|| EngineError::Other("file.newSequence returned no sequence".into()))?;
     let fd = rate.frame_duration();
@@ -791,7 +909,9 @@ fn build(
         ) {
             title_clips.push(v);
         }
-        if !c.subtitle.is_empty()
+        // a reel shows each place's name alone: no month line under it
+        if plan.kind != "reel"
+            && !c.subtitle.is_empty()
             && c.subtitle != c.title
             && let Some(v) = soft(
                 s,

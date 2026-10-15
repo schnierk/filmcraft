@@ -387,6 +387,7 @@ fn finish(s: &mut Session, a: Analysis) -> Result<Value> {
         media.retain(|m| m.candidate.item.is_some());
         let music = a.music.as_ref().and_then(|(path, beats)| item_for_path(s, path).map(|i| Music { item: i.0, beats: beats.clone() }));
         let mut v = super::assemble::assemble_in(s, &plan, &media, music.as_ref())?;
+        s.regie.material = Some(super::assemble::Material::of(&plan, &media, music.as_ref(), &v));
         v["scanned"] = json!(a.scanned);
         v["skipped"] = json!(a.skipped);
         v["screenshots"] = json!(a.screenshots);
