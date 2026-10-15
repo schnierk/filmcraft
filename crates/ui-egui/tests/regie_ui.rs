@@ -426,6 +426,8 @@ fn a_finished_film_plays_and_undoes() {
     assert_eq!(ui["playback"]["playing"], json!(true), "and plays it");
     assert_eq!(ui["ui"]["regie"]["error"], "");
     d.ok("ui.menu.invoke", json!({"id": "playback.stop"}));
+    // this film was not cut by the director here: there is nothing to make a reel from
+    assert_eq!(d.element("regie.reel").unwrap()["enabled"], json!(false));
     d.click("regie.undo");
     let r = d.regie();
     assert_eq!(r["result"]["undone"], json!(true), "{r}");
@@ -434,6 +436,31 @@ fn a_finished_film_plays_and_undoes() {
     assert_eq!(d.element("regie.undo").unwrap()["enabled"], json!(false), "only once");
     assert_eq!(d.element("regie.play").unwrap()["enabled"], json!(false), "the film is gone");
     assert!(d.label("regie.result").starts_with("The film was taken back."));
+}
+
+#[test]
+fn a_reel_version_is_cut_from_the_last_film() {
+    let mut d = Driver::demo();
+    d.open();
+    let project = d.ok("engine.execute", json!({"command": "project.inspect", "params": {}}));
+    let clip = first_media(&project["root"]).expect("a demo clip");
+    // a film the director cut from the demo clip, as the panel shows it when it is done
+    let plan = json!({"language": "en", "width": 640, "height": 360, "fps": 25.0, "seconds": 6.0, "title": "Demo days"});
+    let media = json!([{"path": "/demo/clip.mp4", "kind": "video", "item": clip, "width": 1920, "height": 1080, "seconds": 5.0}]);
+    let film = d.ok("engine.execute", json!({"command": "regie.assemble", "params": {"plan": plan, "media": media}}));
+    let film_seq = film["sequence"].as_u64().expect("the film");
+    d.ok("ui.set", json!({"regie": {"result": {"sequence": film_seq, "clips": film["clips"], "seconds": film["seconds"], "summary": film["summary"]}}}));
+    d.frames(2);
+    assert_eq!(d.element("regie.reel").unwrap()["enabled"], json!(true));
+    d.click("regie.reel");
+    let r = d.regie();
+    let reel = r["result"]["sequence"].as_u64().expect("the reel");
+    assert_ne!(reel, film_seq, "{r}");
+    assert_eq!(r["error"], "", "{r}");
+    assert!(d.label("regie.result").contains("9:16"), "{}", d.label("regie.result"));
+    let names = d.ok("engine.execute", json!({"command": "project.inspect", "params": {}})).to_string();
+    assert!(names.contains("Demo days (reel 9:16)"), "the reel's sequence is named after the film");
+    d.snapshot("reel");
 }
 
 /// Squeezed into tiny windows, with a plan, a running film and a finished one, the panel draws

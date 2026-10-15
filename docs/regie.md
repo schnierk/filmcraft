@@ -23,6 +23,7 @@ optional).
 | `regie.assemble` | `{"plan": Plan, "media": [Candidate + "highlights"?], "music"?: {"item": id, "beats"?: Beats}}` | `{"sequence": id, "clips": n, "seconds", "chapters": [...], "summary": [str]}` |
 | `regie.run` | `{"request"?: str, "plan"?: Plan, "folders"?: [str], "wait"?: bool}` | starts a job (see `jobs.list`); `regie.status` reports progress and, when done, the `regie.assemble` result |
 | `regie.status` | `{}` | `{"running", "job", "progress", "status", "result"}` |
+| `regie.variant` | `{"aspect"?: "9:16"\|"1:1"\|"4:5"\|"16:9", "seconds"?: n}` | another version of the last film (default: a 30-second 9:16 reel, at most 1080 pixels on the short side) cut from the same media, best moments and music without searching or analysing again; a new sequence named "<title> (Reel 9:16)", one undo step. The panel's **Reel version (9:16)** button runs it |
 
 ## How the film is built (recipe "recap")
 

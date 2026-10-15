@@ -117,6 +117,53 @@ fn run_finds_the_media_in_a_folder_and_builds_the_film() {
 }
 
 #[test]
+fn variant_cuts_a_reel_from_the_last_film_without_searching_again() {
+    let (dir, _files) = footage("regie-variant");
+    let mut s = Session::default();
+    // no film yet: nothing to cut a version from
+    let e = s.execute("regie.variant", json!({})).unwrap_err().to_string();
+    assert!(e.contains("no film"), "{e}");
+    let r = s
+        .execute(
+            "regie.run",
+            json!({"request": "Mach einen Rückblick in 16:9, etwa 8 Sekunden, Titel \"Herbst\"", "folders": [dir.to_string_lossy()], "wait": true}),
+        )
+        .unwrap();
+    let film = ItemId(r["result"]["sequence"].as_u64().unwrap());
+    let undo_before = s.history.undo.len();
+    let v = s.execute("regie.variant", json!({"seconds": 6})).unwrap();
+    assert_eq!(s.history.undo.len(), undo_before + 1, "the version is one undo step");
+    let reel = ItemId(v["sequence"].as_u64().unwrap());
+    assert_ne!(reel, film);
+    let q = s.project.sequence(reel).unwrap();
+    assert_eq!((q.settings.width, q.settings.height), (1080, 1920));
+    assert_eq!(v["aspect"], "9:16");
+    assert_eq!(v["title"], "Herbst", "the film's title, not a new one");
+    let name = &s.project.item(reel).unwrap().name;
+    assert_eq!(name, "Herbst (Reel 9:16)");
+    assert!(v["clips"].as_u64().unwrap() >= 2, "{v}");
+    assert!(v["seconds"].as_f64().unwrap() <= 6.5, "{v}");
+    assert!(v["summary"][0].as_str().unwrap().contains("ohne neue Suche"), "{v}");
+    // the film stays; regie.status reports the version
+    assert!(s.project.sequence(film).is_some());
+    assert_eq!(s.execute("regie.status", json!({})).unwrap()["result"]["sequence"], v["sequence"]);
+    // a square version of the same film (not of the reel)
+    let sq = s.execute("regie.variant", json!({"aspect": "1:1", "seconds": 5})).unwrap();
+    let q = s.project.sequence(ItemId(sq["sequence"].as_u64().unwrap())).unwrap();
+    assert_eq!((q.settings.width, q.settings.height), (1080, 1080));
+    assert_eq!(sq["title"], "Herbst");
+    // hostile parameters are errors
+    for bad in [json!({"aspect": "21:9"}), json!({"aspect": 5}), json!({"seconds": 0}), json!({"seconds": "lang"}), json!({"seconds": 1e9}), json!([1])] {
+        assert!(s.execute("regie.variant", bad.clone()).is_err(), "{bad}");
+    }
+    // undoing the film takes its media out of the project: nothing is left to cut from
+    while s.project.sequence(film).is_some() {
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    assert!(s.execute("regie.variant", json!({})).is_err());
+}
+
+#[test]
 fn run_without_matching_media_reports_it_and_changes_nothing() {
     let dir = tmp_dir("regie-empty");
     let mut s = Session::default();

@@ -676,7 +676,30 @@ enum Action {
     Cancel,
     Play,
     Undo,
+    Reel,
     AddFolder,
+}
+
+/// What the result section may offer for the last film.
+struct Film {
+    /// Its sequence is still in the project (Play).
+    present: bool,
+    /// It is the last change (the panel's Undo).
+    last: bool,
+    /// What it was cut from is known (Reel version).
+    can_vary: bool,
+}
+
+/// Reel version: `regie.variant` (9:16, 30 seconds) from what the last film was cut from, shown
+/// like a new film. It needs no search or analysis, so it runs at once.
+fn reel(app: &mut FilmcraftApp) {
+    match app.session.execute("regie.variant", json!({"aspect": "9:16", "seconds": 30})) {
+        Ok(v) => match RegieResult::from_json(&v) {
+            Some(r) => finish(app, r),
+            None => app.ui.regie.error = tl!("The AI Director stopped without making a film.").into(),
+        },
+        Err(e) => fail(app, "regie.variant", &e),
+    }
 }
 
 /// Register `r` for automation, with the part of it the scroll area shows (what a click can
@@ -716,6 +739,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         .result
         .as_ref()
         .map_or((false, false), |r| (r.sequence.is_some_and(|s| app.session.project.sequence(ItemId(s)).is_some()), film_is_last_change(app, r)));
+    // another version needs what the last film was cut from (kept by the session)
+    let can_vary = app.session.regie.material.is_some();
     let mut actions: Vec<Action> = Vec::new();
     let auto = &mut app.auto;
     let d = &mut app.ui.regie;
@@ -745,7 +770,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             progress(ui, d, auto, &t, &mut actions);
         } else if d.result.is_some() {
             ui.add_space(8.0);
-            result(ui, d, auto, &t, film_present, film_last, &mut actions);
+            result(ui, d, auto, &t, Film { present: film_present, last: film_last, can_vary }, &mut actions);
         }
         ui.add_space(8.0);
         plan_section(ui, d, auto, &t, running);
@@ -758,6 +783,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Action::Cancel => cancel(app),
             Action::Play => play(app, &ctx),
             Action::Undo => undo(app, &ctx),
+            Action::Reel => reel(app),
             Action::AddFolder => app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
                 for p in paths {
                     app.ui.regie.add_folder(&p);
@@ -869,8 +895,9 @@ fn progress(ui: &mut egui::Ui, d: &mut RegieUi, auto: &mut Registry, t: &Tokens,
     }
 }
 
-/// The last film: what was made, Play, Undo, Explain how.
-fn result(ui: &mut egui::Ui, d: &mut RegieUi, auto: &mut Registry, t: &Tokens, present: bool, last: bool, actions: &mut Vec<Action>) {
+/// The last film: what was made, Play, Undo, Reel version, Explain how.
+fn result(ui: &mut egui::Ui, d: &mut RegieUi, auto: &mut Registry, t: &Tokens, film: Film, actions: &mut Vec<Action>) {
+    let Film { present, last, can_vary } = film;
     let Some(r) = d.result.as_ref() else { return };
     let explain_open = d.is_open(EXPLAIN);
     let mut toggle_explain = false;
@@ -912,6 +939,13 @@ fn result(ui: &mut egui::Ui, d: &mut RegieUi, auto: &mut Registry, t: &Tokens, p
                 reg(auto, ui, "regie.undo", &u, tl!("Undo"));
                 if u.clicked() {
                     actions.push(Action::Undo);
+                }
+                let v = ui
+                    .add_enabled(can_vary && !r.undone, egui::Button::new(tl!("Reel version (9:16)")))
+                    .on_hover_text(tl!("Cut a 30-second 9:16 reel from the same media and music, without searching again."));
+                reg(auto, ui, "regie.reel", &v, tl!("Reel version (9:16)"));
+                if v.clicked() {
+                    actions.push(Action::Reel);
                 }
                 let e = ui.add(egui::Button::new(tl!("Explain how")).selected(explain_open));
                 reg(auto, ui, "regie.explain", &e, tl!("Explain how"));
