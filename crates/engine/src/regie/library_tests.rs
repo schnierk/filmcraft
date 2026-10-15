@@ -619,6 +619,23 @@ fn find_media_by_date_place_and_kind() {
 }
 
 #[test]
+fn screenshots_and_screen_recordings_are_left_out_unless_asked_for() {
+    let root = tmp_dir("regie-screenshots");
+    write(&root.join("IMG_0001.jpg"), &jpeg(Some(&phone_exif(true)), 4000, 3000));
+    write(&root.join("Bildschirmfoto vom 2026-09-26 08-34-36.png"), &png(1920, 1080, None));
+    write(&root.join("Screenshot_20260101-120000.png"), &png(1080, 2400, None));
+    write(&root.join("Screen Recording 2026-01-01 at 12.00.00.mov"), &movie(&iphone()));
+    write(&root.join("Bildschirmaufnahme 2026-01-01.mp4"), &movie(&android()));
+    // a sound is never a screenshot, whatever its name
+    write(&root.join("Screenshot sound.wav"), &wav_1s());
+    let r = find(&root, MediaFilter::default());
+    assert_eq!(names(&r), ["IMG_0001.jpg", "Screenshot sound.wav"]);
+    assert_eq!((r.screenshots, r.skipped), (4, 0));
+    let all = find(&root, MediaFilter { screenshots: true, ..Default::default() });
+    assert_eq!((all.candidates.len(), all.screenshots), (6, 0));
+}
+
+#[test]
 fn find_media_searches_each_folder_once_and_stops_when_cancelled() {
     let root = holiday_tree("regie-roots");
     // a folder inside another, the same folder twice, written differently
@@ -764,6 +781,7 @@ fn hostile_parameters_are_errors_not_panics() {
         ("regie.findMedia", json!({"folders": [folder, huge]})),
         ("regie.findMedia", json!({"folders": vec![folder.clone(); 300]})),
         ("regie.findMedia", json!({"folders": [folder], "from": "2026-13-01"})),
+        ("regie.findMedia", json!({"folders": [folder], "screenshots": "yes"})),
         ("regie.findMedia", json!({"folders": [folder], "from": "2026-02-30"})),
         ("regie.findMedia", json!({"folders": [folder], "from": 20260101})),
         ("regie.findMedia", json!({"folders": [folder], "to": "yesterday"})),

@@ -33,6 +33,8 @@ pub struct Analysis {
     pub scanned: u64,
     /// Photos and videos in formats FilmCraft cannot import (HEIC, …) and unreadable files.
     pub skipped: u64,
+    /// Screenshots and screen recordings left out.
+    pub screenshots: u64,
 }
 
 /// A running `regie.run` job.
@@ -138,17 +140,18 @@ fn analyse(
     if cancel.load(Ordering::Relaxed) {
         return Err(stopped(de));
     }
-    let (scanned, skipped) = (found.scanned, found.skipped);
+    let (scanned, skipped, screenshots) = (found.scanned, found.skipped, found.screenshots);
     let mut videos: Vec<Candidate> = found.candidates.iter().filter(|c| c.kind == "video" && plan.videos).cloned().collect();
     let mut photos: Vec<Candidate> = found.candidates.iter().filter(|c| c.kind == "photo" && plan.photos).cloned().collect();
     let audio: Vec<Candidate> = found.candidates.iter().filter(|c| c.kind == "audio").cloned().collect();
     spread(&mut videos, MAX_VIDEOS);
     spread(&mut photos, MAX_PHOTOS);
     if videos.is_empty() && photos.is_empty() {
+        let shots = screenshots_left_out(screenshots, de).map(|t| format!(" {t}")).unwrap_or_default();
         return Err(if de {
-            format!("In den Ordnern ({}) habe ich keine passenden Fotos oder Videos gefunden.", found.folders.join(", "))
+            format!("In den Ordnern ({}) habe ich keine passenden Fotos oder Videos gefunden.{shots}", found.folders.join(", "))
         } else {
-            format!("No matching photos or videos in the folders ({}).", found.folders.join(", "))
+            format!("No matching photos or videos in the folders ({}).{shots}", found.folders.join(", "))
         });
     }
     // the music: the file the plan names, else the longest audio file of at least a minute
@@ -203,7 +206,7 @@ fn analyse(
         None => None,
     };
     progress(total, total, String::new());
-    Ok(Analysis { plan: plan.clone(), media, music, scanned, skipped })
+    Ok(Analysis { plan: plan.clone(), media, music, scanned, skipped, screenshots })
 }
 
 /// A small, blurred and darkened copy of the photo at `path`, written as PNG into `dir` (named
@@ -385,16 +388,30 @@ fn finish(s: &mut Session, a: Analysis) -> Result<Value> {
         let mut v = super::assemble::assemble_in(s, &plan, &media, music.as_ref())?;
         v["scanned"] = json!(a.scanned);
         v["skipped"] = json!(a.skipped);
-        if a.skipped > 0
-            && let Some(sum) = v.get_mut("summary").and_then(Value::as_array_mut)
-        {
-            sum.push(json!(if de {
-                format!("{} Dateien konnte ich nicht verwenden (z. B. HEIC-Fotos vom iPhone: in den Fotos-Einstellungen „Maximale Kompatibilität“ wählen oder als JPEG exportieren).", a.skipped)
-            } else {
-                format!("{} files could not be used (for example HEIC photos from an iPhone: choose “Most Compatible” in the camera settings or export them as JPEG).", a.skipped)
-            }));
+        v["screenshots"] = json!(a.screenshots);
+        if let Some(sum) = v.get_mut("summary").and_then(Value::as_array_mut) {
+            if a.skipped > 0 {
+                sum.push(json!(if de {
+                    format!("{} Dateien konnte ich nicht verwenden (z. B. HEIC-Fotos vom iPhone: in den Fotos-Einstellungen „Maximale Kompatibilität“ wählen oder als JPEG exportieren).", a.skipped)
+                } else {
+                    format!("{} files could not be used (for example HEIC photos from an iPhone: choose “Most Compatible” in the camera settings or export them as JPEG).", a.skipped)
+                }));
+            }
+            if let Some(t) = screenshots_left_out(a.screenshots, de) {
+                sum.push(json!(t));
+            }
         }
         Ok(v)
+    })
+}
+
+/// The summary line for screenshots and screen recordings the search left out (none for 0).
+fn screenshots_left_out(n: u64, de: bool) -> Option<String> {
+    (n > 0).then(|| match (de, n) {
+        (true, 1) => "Ein Bildschirmfoto (oder eine Bildschirmaufnahme) habe ich weggelassen.".to_string(),
+        (true, _) => format!("{n} Bildschirmfotos und Bildschirmaufnahmen habe ich weggelassen."),
+        (false, 1) => "I left out one screenshot or screen recording.".to_string(),
+        (false, _) => format!("I left out {n} screenshots and screen recordings."),
     })
 }
 
@@ -403,6 +420,8 @@ pub struct Found {
     pub candidates: Vec<Candidate>,
     pub scanned: u64,
     pub skipped: u64,
+    /// Screenshots and screen recordings left out.
+    pub screenshots: u64,
     pub folders: Vec<String>,
 }
 
@@ -425,7 +444,13 @@ fn search(plan: &Plan, cancel: &AtomicBool) -> std::result::Result<Found, String
     let music = super::library::find_media(&folders, &music_filter, cancel);
     let mut candidates = pictures.candidates;
     candidates.extend(music.candidates);
-    Ok(Found { candidates, scanned: pictures.scanned, skipped: pictures.skipped, folders: folders.iter().map(|f| f.display().to_string()).collect() })
+    Ok(Found {
+        candidates,
+        scanned: pictures.scanned,
+        skipped: pictures.skipped,
+        screenshots: pictures.screenshots,
+        folders: folders.iter().map(|f| f.display().to_string()).collect(),
+    })
 }
 
 fn expand_home(f: &str) -> std::path::PathBuf {
