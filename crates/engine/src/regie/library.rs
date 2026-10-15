@@ -69,6 +69,11 @@ const UNSUPPORTED: &[&str] = &[
     "erf", "kdc", "dcr", "mrw", "wmv", "asf", "flv", "f4v", "3g2", "ogv", "rm", "rmvb", "divx", "wma", "amr", "ape", "wv",
 ];
 
+/// How screenshots and screen recordings are named by default (desktop, phone and macOS tools, in
+/// English and German), compared with the start of a file name in lower case. They are not the
+/// photos and videos a film is made of, and the picture folder is often full of them.
+const SCREENSHOT_NAMES: &[&str] = &["screenshot", "screen shot", "screen recording", "bildschirmfoto", "bildschirmaufnahme", "bildschirmaufzeichnung"];
+
 /// Folder names that hold no user media (NAS thumbnail and recycle folders, system folders).
 const SYSTEM_FOLDERS: &[&str] = &["@eaDir", "#recycle", "#snapshot", "$RECYCLE.BIN", "System Volume Information", "lost+found"];
 
@@ -152,6 +157,12 @@ pub(crate) fn read_info<S: ByteSource + ?Sized>(src: &S, ext: &str, info: &mut C
 /// A file's lower-case extension ("" when it has none).
 fn extension(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase()
+}
+
+/// Whether a file's name says it is a screenshot or a screen recording ([`SCREENSHOT_NAMES`]).
+fn is_screenshot(path: &Path) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    SCREENSHOT_NAMES.iter().any(|s| name.starts_with(s))
 }
 
 /// The kind FilmCraft's import gives a file with extension `ext` (lower case).
@@ -625,11 +636,14 @@ pub struct MediaFilter {
     pub kinds: Vec<String>,
     /// At most this many candidates, the earliest first (capped at [`MAX_FILES`]).
     pub limit: usize,
+    /// Keep screenshots and screen recordings (files named as [`SCREENSHOT_NAMES`]); they are
+    /// left out by default.
+    pub screenshots: bool,
 }
 
 impl Default for MediaFilter {
     fn default() -> Self {
-        MediaFilter { from: None, to: None, places: Vec::new(), kinds: Vec::new(), limit: DEFAULT_LIMIT }
+        MediaFilter { from: None, to: None, places: Vec::new(), kinds: Vec::new(), limit: DEFAULT_LIMIT, screenshots: false }
     }
 }
 
@@ -661,6 +675,8 @@ pub struct FindResult {
     pub skipped: u64,
     /// How many media matched the filter before the limit cut the list.
     pub matched: u64,
+    /// Screenshots and screen recordings left out (see [`MediaFilter::screenshots`]).
+    pub screenshots: u64,
 }
 
 /// Search `folders` (the user's picture, video and music folders when empty, see
@@ -689,6 +705,8 @@ struct Walk {
     seen: std::collections::HashSet<String>,
     scanned: u64,
     skipped: u64,
+    keep_screenshots: bool,
+    screenshots: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -709,6 +727,8 @@ impl Walk {
             seen: Default::default(),
             scanned: 0,
             skipped: 0,
+            keep_screenshots: filter.screenshots,
+            screenshots: 0,
         }
     }
 
@@ -815,6 +835,10 @@ impl Walk {
         if !self.kinds.is_empty() && !is_mp4_extension(&ext) && !self.kinds.iter().any(|k| k == ext_kind) {
             return;
         }
+        if !self.keep_screenshots && ext_kind != "audio" && is_screenshot(path) {
+            self.screenshots += 1;
+            return;
+        }
         if !self.words.is_empty() && !place_matches(&self.words, root, path, None) {
             return;
         }
@@ -862,7 +886,7 @@ impl Walk {
         let matched = self.found.len() as u64;
         let limit = limit.min(usize::try_from(MAX_FILES).unwrap_or(usize::MAX));
         let candidates = self.found.into_iter().take(limit).map(|(_, c)| c).collect();
-        FindResult { candidates, scanned: self.scanned, skipped: self.skipped, matched }
+        FindResult { candidates, scanned: self.scanned, skipped: self.skipped, matched, screenshots: self.screenshots }
     }
 }
 
@@ -1008,7 +1032,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "AI Director: Find Media",
             menu: &[],
             shortcut: None,
-            params: r#"{"folders":[str]?,"from":"YYYY-MM-DD"?,"to":"YYYY-MM-DD"?,"places":[str]?,"kinds":["video"|"photo"|"audio"]?,"limit":int=10000}"#,
+            params: r#"{"folders":[str]?,"from":"YYYY-MM-DD"?,"to":"YYYY-MM-DD"?,"places":[str]?,"kinds":["video"|"photo"|"audio"]?,"limit":int=10000,"screenshots":bool=false}"#,
             enabled: always,
             run: run_find_media,
             journal: false,
@@ -1159,10 +1183,21 @@ fn run_find_media(_s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(CMD, "found no picture, video or music folder: name the folders to search in `folders`"));
         }
     }
-    let filter = MediaFilter { from, to, places, kinds, limit };
+    let screenshots = match p.get("screenshots") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad(CMD, format!("`screenshots` must be true or false, got {}", shown(v))))?,
+    };
+    let filter = MediaFilter { from, to, places, kinds, limit, screenshots };
     let r = find_media(&folders, &filter, &AtomicBool::new(false));
     let folders: Vec<String> = distinct_roots(folders).iter().map(|f| f.to_string_lossy().into_owned()).collect();
-    Ok(json!({"candidates": r.candidates, "scanned": r.scanned, "skipped": r.skipped, "matched": r.matched, "folders": folders}))
+    Ok(json!({
+        "candidates": r.candidates,
+        "scanned": r.scanned,
+        "skipped": r.skipped,
+        "matched": r.matched,
+        "screenshots": r.screenshots,
+        "folders": folders
+    }))
 }
 
 #[cfg(test)]
