@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 pub mod grade;
+pub mod icc;
 pub mod log;
 pub mod lut;
 pub mod spaces;

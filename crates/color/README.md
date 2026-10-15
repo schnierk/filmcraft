@@ -11,6 +11,7 @@ gamut mapping, and LUT files.
 | `spaces` | gamuts and 3×3 matrices (SMPTE RP 177), `ColorSpace` (Interpret Footage choices), `WorkingSpace`, `ColorPipeline` |
 | `transform` | `InputTransform` (source → working), `OutputTransform` (working → monitor / export), BT.2390 tone mapping, gamut compression |
 | `lut` | `.cube` (1D, 3D, shaper + 3D) and `.3dl` parse/write, tetrahedral interpolation |
+| `icc` | recognising RGB matrix/TRC ICC profiles (ICC.1:2022): the gamut of their colorants (BT.709, Display P3, BT.2020, compared after Bradford adaptation to the D50 connection space) and whether their curves are the sRGB curve; used for the Display P3 profile in iPhone photos |
 
 ## Working units
 
